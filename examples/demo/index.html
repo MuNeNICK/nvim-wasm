@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nvim wasm demo</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #0b0f15; color: #e8edf5; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; justify-content: center; min-height: 100vh; }
+      .app { width: min(960px, 100%); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+      .status { font-weight: 600; }
+      .grid { min-height: 480px; border: 1px solid #2a3346; border-radius: 10px; padding: 10px; background: #050912; color: #dfe5f1; font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 14px; line-height: 1.35; white-space: pre; overflow: auto; outline: none; }
+      .grid:focus { border-color: #5ad1ff; }
+      .hint { color: #9aa4b5; font-size: 12px; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="status" id="status">Loading...</div>
+      <div class="hint" id="mode">mode: -</div>
+      <div id="grid" class="grid" tabindex="0" aria-label="Neovim grid"></div>
+      <p class="hint">Serve with COOP/COEP so SharedArrayBuffer works.</p>
+    </div>
+
+    <script type="module">
+      import { encode } from "./msgpack.js";
+      const statusEl = document.getElementById("status");
+      const gridEl = document.getElementById("grid");
+      const modeEl = document.getElementById("mode");
+      const WORKER_VERSION = "v1";
+      const cols = 96;
+      const rows = 32;
+      let worker = null;
+      let ring = null;
+      let reqId = 0;
+      let primeSent = false;
+
+      class SharedInputWriter {
+        constructor(capacity = 262144) {
+          this.capacity = capacity;
+          this.buffer = new SharedArrayBuffer(8 + capacity);
+          this.ctrl = new Int32Array(this.buffer, 0, 2);
+          this.data = new Uint8Array(this.buffer, 8);
+          Atomics.store(this.ctrl, 0, 0);
+          Atomics.store(this.ctrl, 1, 0);
+        }
+        push(bytes) {
+          const src = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+          let head = Atomics.load(this.ctrl, 0);
+          let tail = Atomics.load(this.ctrl, 1);
+          for (let i = 0; i < src.length; i += 1) {
+            const next = (tail + 1) % this.capacity;
+            if (next === head) break;
+            this.data[tail] = src[i];
+            tail = next;
+          }
+          Atomics.store(this.ctrl, 1, tail);
+          Atomics.notify(this.ctrl, 1);
+        }
+      }
+
+      gridEl.addEventListener("click", () => gridEl.focus());
+      gridEl.addEventListener("keydown", (ev) => {
+        const keys = translateKey(ev);
+        if (!keys) return;
+        ev.preventDefault();
+        sendInput(keys);
+      });
+
+      function startSession() {
+        if (!window.crossOriginIsolated) {
+          setStatus("Serve with COOP/COEP so SharedArrayBuffer works", true);
+          return;
+        }
+        stopSession();
+        ring = new SharedInputWriter();
+        reqId = 0;
+        primeSent = false;
+        worker = new Worker(`./nvim-worker.js?${WORKER_VERSION}`, { type: "module" });
+        worker.onmessage = handleWorkerMessage;
+        worker.postMessage({ type: "start", inputBuffer: ring.buffer, cols, rows });
+        setStatus("Starting Neovim...");
+        // Fallback: ensure primeRpc runs even if status message is missed.
+        setTimeout(() => { if (!primeSent) primeRpc(); }, 500);
+      }
+
+      function stopSession() { if (worker) { worker.terminate(); worker = null; } }
+
+      function primeRpc() {
+        sendRpc("nvim_ui_attach", [cols, rows, { rgb: true, ext_linegrid: true, ext_hlstate: false }]);
+        sendRpc("nvim_ui_try_resize", [cols, rows]);
+        sendRpc("nvim_command", ["set noswapfile"]);
+        sendRpc("nvim_command", ["set number"]);
+        sendRpc("nvim_command", ["set fillchars=eob:~"]);
+        // Force demo buffer content after attach so the grid isn't blank.
+        const lua = `
+          local lines = ...
+          vim.cmd('enew')
+          local buf = vim.api.nvim_get_current_buf()
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+          vim.bo[buf].buftype = ''
+          vim.bo[buf].modifiable = true
+          vim.bo[buf].modified = true
+          vim.api.nvim_buf_set_name(buf, 'demo.txt')
+          vim.cmd('redraw!')
+        `;
+        sendRpc("nvim_exec_lua", [lua, [
+          "Neovim WASM demo",
+          "",
+          "- click the grid and type",
+          "- press i for insert mode",
+          "- :q to quit",
+          "",
+          "Happy editing!",
+        ]]);
+        sendRpc("nvim_command", ["redraw!"]);
+        primeSent = true;
+      }
+
+      function sendRpc(method, params = []) {
+        if (!ring) return;
+        const msg = encode([0, reqId++, method, params]);
+        ring.push(msg);
+      }
+
+      function sendInput(keys) { sendRpc("nvim_input", [keys]); }
+
+      function handleWorkerMessage(event) {
+        const { type } = event.data || {};
+        if (type === "draw-text") {
+          renderGrid(event.data.lines, event.data.mode);
+        } else if (type === "exit") {
+          setStatus(`nvim exited (${event.data.code})`, event.data.code !== 0);
+        }
+      }
+
+      function renderGrid(lines = [], mode = "-") {
+        const text = (lines && lines.length ? lines : [""]).join("\n");
+        gridEl.textContent = text;
+        modeEl.textContent = `mode: ${mode || "-"}`;
+      }
+
+      function setStatus(text, error = false) { statusEl.textContent = text; statusEl.style.color = error ? "#ff9ea2" : "#e8edf5"; }
+
+      function translateKey(ev) {
+        const key = ev.key; const isCtrl = ev.ctrlKey || ev.metaKey; const isAlt = ev.altKey;
+        switch (key) {
+          case "Backspace": return "<BS>";
+          case "Enter": return "<CR>";
+          case "Escape": return "<Esc>";
+          case "Tab": return "<Tab>";
+          case "ArrowUp": return "<Up>";
+          case "ArrowDown": return "<Down>";
+          case "ArrowLeft": return "<Left>";
+          case "ArrowRight": return "<Right>";
+          case "Delete": return "<Del>";
+          case "Home": return "<Home>";
+          case "End": return "<End>";
+          case "PageUp": return "<PageUp>";
+          case "PageDown": return "<PageDown>";
+          case "Insert": return "<Insert>";
+          default: break;
+        }
+        if (key.length === 1) {
+          const char = ev.shiftKey ? key : key.toLowerCase();
+          if (!isCtrl && !isAlt) return char;
+          let mod = "";
+          if (isCtrl) mod += "C-";
+          if (isAlt) mod += "A-";
+          return `<${mod}${char}>`;
+        }
+        return null;
+      }
+
+      startSession();
+    </script>
+  </body>
+</html>
