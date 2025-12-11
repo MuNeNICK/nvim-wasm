@@ -7,13 +7,13 @@ rewrites the tail so the wasm build can proceed.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
 
 
-EXTRA_BLOCK = """\
-// Extra stubs injected for WASI build (single-threaded, no TLS).
+EXTRA_BLOCK = r"""// Extra stubs injected for WASI build (single-threaded, no TLS).
 void uv_once(uv_once_t* guard, void (*callback)(void)) {
   if (guard && *guard) {
     return;
@@ -138,12 +138,18 @@ void uv_loop_set_data(uv_loop_t* arg0, void* data) {
 """
 
 
-def main(argv: list[str]) -> int:
-  if len(argv) != 2:
-    print("usage: patch-libuv-wasi-tail.py <libuv-source-dir>", file=sys.stderr)
-    return 1
+def _parse_args(argv: list[str]) -> Path:
+  parser = argparse.ArgumentParser(description="Patch libuv WASI stub tail")
+  parser.add_argument("src", nargs="?", help="libuv source dir (contains src/wasi/stub.c)")
+  args = parser.parse_args(argv[1:])
+  src = args.src or ""
+  if not src:
+    raise SystemExit("libuv source dir must be provided")
+  return Path(src)
 
-  src_dir = Path(argv[1])
+
+def main(argv: list[str]) -> int:
+  src_dir = _parse_args(argv)
   stub = src_dir / "src" / "wasi" / "stub.c"
   if not stub.exists():
     print(f"stub.c not found: {stub}", file=sys.stderr)

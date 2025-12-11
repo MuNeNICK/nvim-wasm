@@ -5,6 +5,10 @@ This repository is a build wrapper that produces a WebAssembly (WASI) binary of 
 ## Layout
 - `neovim/` – upstream Neovim submodule (kept clean).
 - `cmake/` – toolchain and build overrides for WASI.
+- `scripts/patch/` – Python patch helpers applied to Lua/luv/libuv during the wasm build.
+- `scripts/build/` – Python helpers invoked during codegen (host Lua wrapper).
+- `scripts/toolchain/` – Python fetch helpers for wasi-sdk/CMake archives.
+- `scripts/config/` – shared flag presets for the wasm build.
 - `patches/wasi-shim/` – header and source stubs for missing POSIX pieces (pty, signal, fcntl, termios, etc.).
 - `patches/libuv-wasi.patch` – minimal libuv patch applied to the downloaded tarball.
 - `build-wasm-deps/` – out-of-tree dependency build (luv, libuv, lua, treesitter, etc.).

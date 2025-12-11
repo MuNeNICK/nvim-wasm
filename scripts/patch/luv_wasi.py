@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
 Patch luv for WASI without touching the Neovim submodule sources.
+
+CLI (env vars as fallback):
+  --build-dir /path/to/deps/build   # used to locate src/luv
+  [--src /path/to/luv/source]       # overrides default <build-dir>/src/luv
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
+import sys
 from pathlib import Path
 
 
@@ -87,9 +93,20 @@ def _patch_dns(src_dir: Path) -> None:
     )
 
 
-def main() -> int:
-    build_dir = Path(os.environ["DEPS_BUILD_DIR"])
-    src_dir = build_dir / "src/luv"
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Patch luv sources for WASI")
+    parser.add_argument("--build-dir", help="deps build root (contains src/luv)")
+    parser.add_argument("--src", help="luv source dir (defaults to <build-dir>/src/luv)")
+    return parser.parse_args(argv[1:])
+
+
+def main(argv: list[str]) -> int:
+    args = _parse_args(argv)
+    build_dir = Path(args.build_dir or os.environ.get("DEPS_BUILD_DIR", ""))
+    if not build_dir:
+        raise SystemExit("build dir not provided (use --build-dir or DEPS_BUILD_DIR)")
+
+    src_dir = Path(args.src) if args.src else build_dir / "src" / "luv"
     if not src_dir.exists():
         raise SystemExit(f"luv source dir not found: {src_dir}")
 
@@ -102,4 +119,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv))

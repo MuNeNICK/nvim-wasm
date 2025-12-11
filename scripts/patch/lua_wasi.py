@@ -3,16 +3,18 @@
 Patch the bundled Lua (PUC 5.1) tree for WASI without touching the upstream
 Neovim submodule.
 
-Expected environment variables (set by cmake/wasm-overrides.cmake):
-  DEPS_BUILD_DIR    - deps build root (contains src/lua)
-  DEPS_INSTALL_DIR  - deps install prefix
-  LUA_WASM_CC       - compiler path
-  LUA_WASM_CFLAGS   - compiler flags to apply
-  LUA_WASM_LDFLAGS  - linker flags to apply (used for MYLIBS/MYLDFLAGS)
+CLI (env vars allowed as fallback for compatibility):
+  --build-dir /path/to/deps/build
+  --install-dir /path/to/deps/prefix
+  --cc <compiler>
+  --cflags "<cflags>"
+  --ldflags "<ldflags>"
+  [--src /path/to/lua/src/root]  # defaults to <build-dir>/src/lua
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
@@ -100,15 +102,35 @@ def _patch_lua_cli(src_dir: Path) -> None:
     path.write_text(text)
 
 
-def main() -> int:
-    env = os.environ
-    build_dir = Path(env["DEPS_BUILD_DIR"])
-    install_dir = env["DEPS_INSTALL_DIR"]
-    cc = env["LUA_WASM_CC"]
-    cflags = env.get("LUA_WASM_CFLAGS", "")
-    ldflags = env.get("LUA_WASM_LDFLAGS", "")
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Patch Lua sources for WASI")
+    parser.add_argument("--build-dir", help="deps build root (contains src/lua)")
+    parser.add_argument("--install-dir", help="deps install prefix")
+    parser.add_argument("--cc", help="compiler path")
+    parser.add_argument("--cflags", default="", help="compiler flags to apply")
+    parser.add_argument("--ldflags", default="", help="linker flags to apply")
+    parser.add_argument("--src", help="Lua source dir (defaults to <build-dir>/src/lua)")
+    return parser.parse_args(argv[1:])
 
-    src_dir = build_dir / "src/lua"
+
+def main(argv: list[str]) -> int:
+    args = _parse_args(argv)
+    env = os.environ
+
+    build_dir = Path(args.build_dir or env.get("DEPS_BUILD_DIR", ""))
+    install_dir = args.install_dir or env.get("DEPS_INSTALL_DIR", "")
+    cc = args.cc or env.get("LUA_WASM_CC", "")
+    cflags = args.cflags or env.get("LUA_WASM_CFLAGS", "")
+    ldflags = args.ldflags or env.get("LUA_WASM_LDFLAGS", "")
+
+    if not build_dir:
+        raise SystemExit("build dir not provided (use --build-dir or DEPS_BUILD_DIR)")
+    if not install_dir:
+        raise SystemExit("install dir not provided (use --install-dir or DEPS_INSTALL_DIR)")
+    if not cc:
+        raise SystemExit("compiler not provided (use --cc or LUA_WASM_CC)")
+
+    src_dir = Path(args.src) if args.src else build_dir / "src" / "lua"
     if not src_dir.exists():
         raise SystemExit(f"Lua source dir not found: {src_dir}")
 
@@ -122,4 +144,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main(sys.argv))

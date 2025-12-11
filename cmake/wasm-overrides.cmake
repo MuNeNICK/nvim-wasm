@@ -3,77 +3,12 @@
 # replaces them with a small stub implementation that just reports ENOSYS.
 
 get_filename_component(_nvim_wrap_source_name "${CMAKE_SOURCE_DIR}" NAME)
+get_filename_component(_nvim_wrap_root "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
 
 # When configuring deps (cmake.deps), patch the bundled Lua without touching
 # the Neovim submodule.
 if(_nvim_wrap_source_name STREQUAL "cmake.deps")
-  include(ExternalProject)
-  function(_nvim_wasm_forward_sysdeps)
-    get_filename_component(_wrap_root "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
-    set(_prefix "${_wrap_root}/build-wasm-deps/usr")
-    list(APPEND DEPS_CMAKE_ARGS
-      "-DCMAKE_PREFIX_PATH=${_prefix}"
-      "-DLUA_LIBRARY=${_prefix}/lib/liblua.a"
-      "-DLUA_INCLUDE_DIR=${_prefix}/include"
-      "-DLIBUV_LIBRARY=${_prefix}/lib/libuv.a"
-      "-DLIBUV_INCLUDE_DIR=${_prefix}/include"
-      "-DCMAKE_C_FLAGS=${CMAKE_C_FLAGS} -O0"
-      "-DCMAKE_EXE_LINKER_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
-      "-DCMAKE_SHARED_LINKER_FLAGS=${CMAKE_SHARED_LINKER_FLAGS}")
-    set(DEPS_CMAKE_ARGS "${DEPS_CMAKE_ARGS}" PARENT_SCOPE)
-  endfunction()
-
-  function(_nvim_wasm_patch_lua_dep)
-    if(NOT TARGET lua)
-      return()
-    endif()
-    get_filename_component(_wrap_root "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
-    set(_script "${_wrap_root}/cmake/patch-lua-wasi.py")
-    if(NOT EXISTS "${_script}")
-      message(FATAL_ERROR "Lua WASI patch script not found: ${_script}")
-    endif()
-    ExternalProject_Add_Step(lua wasm_patch_lua
-      COMMAND ${CMAKE_COMMAND} -E env
-        DEPS_BUILD_DIR=${DEPS_BUILD_DIR}
-        DEPS_INSTALL_DIR=${DEPS_INSTALL_DIR}
-        LUA_WASM_CC=${CMAKE_C_COMPILER}
-        LUA_WASM_CFLAGS=${CMAKE_C_FLAGS}
-        LUA_WASM_LDFLAGS=${CMAKE_EXE_LINKER_FLAGS}
-        python3 ${_script}
-      DEPENDEES configure
-      DEPENDERS build
-      COMMENT "Patching Lua sources for WASI")
-
-    if(TARGET luv)
-      set(_luv_script "${_wrap_root}/cmake/patch-luv-wasi.py")
-      if(EXISTS "${_luv_script}")
-        ExternalProject_Add_Step(luv wasm_patch_luv
-          COMMAND ${CMAKE_COMMAND} -E env
-            DEPS_BUILD_DIR=${DEPS_BUILD_DIR}
-            python3 ${_luv_script}
-          DEPENDEES download
-          DEPENDERS configure
-          COMMENT "Patching luv sources for WASI")
-      endif()
-    endif()
-  endfunction()
-  function(_nvim_wasm_tweak_luv_dep)
-    if(NOT TARGET luv)
-      return()
-    endif()
-    get_filename_component(_wrap_root "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
-    set(_prefix "${_wrap_root}/build-wasm-deps/usr")
-    list(APPEND LUV_CMAKE_ARGS
-      "-DCMAKE_PREFIX_PATH=${_prefix}"
-      "-DLIBUV_LIBRARY=${_prefix}/lib/libuv.a"
-      "-DLIBUV_INCLUDE_DIR=${_prefix}/include"
-      "-DLUA_LIBRARY=${_prefix}/lib/liblua.a"
-      "-DLUA_INCLUDE_DIR=${_prefix}/include")
-    set(LUV_CMAKE_ARGS "${LUV_CMAKE_ARGS}" PARENT_SCOPE)
-  endfunction()
-  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _nvim_wasm_forward_sysdeps)
-  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _nvim_wasm_patch_lua_dep)
-  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _nvim_wasm_tweak_luv_dep)
+  include("${_nvim_wrap_root}/cmake/wasm-patch-hooks.cmake")
   return()
 endif()
 
