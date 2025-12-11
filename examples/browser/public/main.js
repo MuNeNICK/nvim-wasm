@@ -30,7 +30,7 @@ let primeSent = false;
 let drawSeen = false;
 let handshakeSeen = false;
 let resendBudget = 12;
-// デバッグ用に worker を覗けるように保持
+// Keep a reference so devtools can inspect the worker during debugging.
 window.__nvimWorker = null;
 
 class SharedInputWriter {
@@ -62,7 +62,7 @@ startBtn.addEventListener("click", () => startSession());
 resetBtn.addEventListener("click", () => {
   stopSession();
   startSession();
-  // 直前の描画スナップショットを復元
+  // Restore the most recent render snapshot
   if (renderGrid.lastSnapshot) {
     gridEl.textContent = renderGrid.lastSnapshot;
   }
@@ -75,20 +75,20 @@ saveDocBtn?.addEventListener("click", () => saveScratchFromNvim());
 clearDocBtn?.addEventListener("click", () => {
   if (docTextEl) docTextEl.value = "";
 });
-// デバッグ用: ブラウザコンソールから window.dumpNvimLog(), window.stopNvim() を叩けるようにする。
+// Debug helper: allow calling window.dumpNvimLog() / window.stopNvim() from the console.
 window.dumpNvimLog = () => {
   if (worker) {
     appendLog(stderrEl, "[local] dump request sent (stream always on)");
-    // RPC 経由で Neovim に自分でログを読ませて通知させる（1回のみ）
+    // Ask Neovim (via RPC) to read NVIM_LOG_FILE and notify once
     requestLogDump();
-    // 補助: worker 側が応答する場合のみ readfile を試す（イベントループに依存）
+    // Helper: attempt readfile only when the worker responds (depends on event loop)
     worker.postMessage({ type: "readfile", path: "tmp/nvim.log" });
     worker.postMessage({ type: "readfile", path: "nvim/tmp/nvim.log" });
   } else {
     appendLog(stderrEl, "[local] no worker");
   }
 };
-// RPC を直接叩くためのデバッグ用フック
+// Debug hook for invoking RPC directly
 window.sendRpc = (method, params = []) => sendRpc(method, params);
 window.stopNvim = () => {
   if (worker) {
@@ -164,19 +164,19 @@ function stopSession() {
 }
 
 function primeRpc() {
-  // 最小限の attach のみ送る (ext_linegrid オフで切り分け)
+  // Send only a minimal attach payload (ext_linegrid toggled for isolation)
   sendRpc("nvim_ui_attach", [
     cols,
     rows,
-    // ext_linegrid を有効化して linegrid 経路に統一
+    // Enable ext_linegrid to route everything through linegrid
     { rgb: true, ext_linegrid: true, ext_hlstate: false, ext_cmdline: false, ext_messages: false, ext_popupmenu: false },
   ]);
   sendRpc("nvim_ui_try_resize", [cols, rows]);
   sendRpc("nvim_command", ["redraw!"]);
   sendRpc("nvim_command", ["call setline(1,'wasm ready (ui attach)') | redraw!"]);
-  // NVIM_LOG_FILE への書き込みを強制して内容を確認できるようにする
+  // Force writing to NVIM_LOG_FILE so its contents are inspectable
   sendRpc("nvim_command", ["lua pcall(vim.fn.writefile, {'ui-attach log'}, vim.env.NVIM_LOG_FILE, 'a')"]);
-  // 不要な grid_clear を避けるため nvim_list_uis は送らない
+  // Skip nvim_list_uis to avoid extra grid_clear
   sendRpc("nvim_command", ["redraw!"]);
 }
 
@@ -238,7 +238,7 @@ function saveScratchFromNvim() {
 let dumpSeq = 0;
 
 function requestLogDump() {
-  // Neovim 自身に NVIM_LOG_FILE を読ませて rpcnotify させる（1回のみ、シーケンス付き）
+  // Have Neovim read NVIM_LOG_FILE and rpcnotify once (with a sequence)
   const seq = ++dumpSeq;
   const lua = `
     local payload = { seq = tonumber(...) or 0 }
@@ -262,13 +262,13 @@ function handleWorkerMessage(event) {
   const { type } = event.data || {};
   if (type === "status") {
     setStatus(event.data.message, event.data.error);
-    // RPC 受け付け準備メッセージを受けた後にまとめて初期 RPC を送る
-  if (!primeSent && typeof event.data.message === "string"
-      && event.data.message.includes("waiting for RPC")) {
-    primeSent = true;
-    clearTimeout(primeTimer);
-    primeRpc();
-  }
+    // After the readiness message arrives, send the initial RPC batch
+    if (!primeSent && typeof event.data.message === "string"
+        && event.data.message.includes("waiting for RPC")) {
+      primeSent = true;
+      clearTimeout(primeTimer);
+      primeRpc();
+    }
   } else if (type === "stderr") {
     appendLog(stderrEl, event.data.text);
   } else if (type === "log") {

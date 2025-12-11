@@ -21,9 +21,9 @@ WASI_SDK_URL ?= https://github.com/WebAssembly/wasi-sdk/releases/download/$(WASI
 WASI_SDK_ROOT := $(TOOLCHAIN_DIR)/wasi-sdk-$(WASI_SDK_VER)-$(WASI_SDK_ARCH)-$(WASI_SDK_OS)
 
 CMAKE_BUILD_JOBS ?= 1
-# depsビルド用の並列（メモリ節約したい場合はここを 1 に固定）。環境で上書き可。
+# Parallelism for deps build (pin to 1 to save memory); override via env
 WASM_DEPS_JOBS ?= 1
-# depsビルドの最適化レベル（tree-sitter系が大きいためデフォルトは低め）。
+# Optimization level for deps build (kept low because tree-sitter bundles are large)
 WASM_DEPS_OPTFLAGS ?= -O0 -g0
 
 CMAKE_VERSION ?= 3.29.6

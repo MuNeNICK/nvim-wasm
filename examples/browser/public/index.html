@@ -67,21 +67,21 @@
         <div class="scratch-header">
           <div>
             <div class="eyebrow">scratch buffer</div>
-            <p class="lede small">テキストを貼り付けて Neovim 内の一時ドキュメントとして開き、/nvim/tmp 下に保存できます。</p>
+            <p class="lede small">Paste text to open it as a temporary Neovim document and save it under /nvim/tmp.</p>
           </div>
           <div class="chip ghost">Temp</div>
         </div>
         <div class="scratch-controls">
-          <label class="input-label" for="doc-path">保存先パス</label>
+          <label class="input-label" for="doc-path">Save path</label>
           <input id="doc-path" class="input" value="/nvim/tmp/wasm-scratch.txt" />
         </div>
-        <textarea id="doc-text" class="scratch-area" rows="8" placeholder="ここにテキストを貼り付けて「バッファに読み込み」で Neovim に送り込みます。"></textarea>
+        <textarea id="doc-text" class="scratch-area" rows="8" placeholder="Paste text here, then use “Load into buffer” to send it to Neovim."></textarea>
         <div class="actions">
-          <button id="load-doc">バッファに読み込み</button>
-          <button id="save-doc" class="ghost">現在バッファを保存</button>
-          <button id="clear-doc" class="ghost">クリア</button>
+          <button id="load-doc">Load into buffer</button>
+          <button id="save-doc" class="ghost">Save current buffer</button>
+          <button id="clear-doc" class="ghost">Clear</button>
         </div>
-        <p class="hint small">バッファ名は保存先パスに設定されます。Neovim 側で編集・上書きできます。</p>
+        <p class="hint small">The buffer name follows the save path. You can edit or overwrite it from Neovim.</p>
       </section>
     </main>
 

@@ -32,14 +32,14 @@ let putLogCount = 0;
 let redrawLogCount = 0;
 // Bump to invalidate caches between UI/worker when behavior changes.
 const WORKER_VERSION = "v30-redraw-grid";
-const SEND_FSDUMP = false;  // fsdumpは無効（必要時のみ有効化）
-// 一定時間後に強制停止してログを送る（ハング検出用）。編集を継続したいのでデフォルト無効。
+const SEND_FSDUMP = false;  // fsdump disabled unless explicitly needed
+// Force-stop after a delay to ship logs (hang detection). Off by default to allow editing.
 const AUTO_TIMEOUT_MS = 0;
-const FORWARD_CONSOLE = false;  // true にすると console.* をメインスレッドへ転送
+const FORWARD_CONSOLE = false;  // when true, forward console.* to the main thread
 const DEBUG_PATH_OPEN = false;
-// ログストリーム常時オン（NVIM_LOG_FILE 向けのみ）。
+// Keep log streaming enabled (NVIM_LOG_FILE only).
 const LOG_STREAM_REGEX = /(nvim\.log)$/;
-let enableLogStream = false; // DEBUG_REDRAW 有効化時はログストリームを止めてノイズを抑える
+let enableLogStream = false; // Disable when DEBUG_REDRAW is on to reduce noise
 let logStreamTimer = null;
 const DEBUG_RPC = true;
 const DEBUG_RPC_ERRORS = true;
@@ -251,12 +251,12 @@ async function startNvim({ inputBuffer, cols, rows }) {
   ensureDir(root, "home/.local/share");
   ensureDir(root, "home/.local/state");
   ensureDir(root, "tmp");
-  // プレースホルダのログファイルを事前に用意しておく（生成有無の切り分け用）
+  // Create placeholder log files up front to detect whether writes succeed later
   ensureFile(root, "tmp/nvim.log");
   ensureFile(root, "tmp/startuptime.log");
   ensureFile(root, "tmp/verbose.log");
   const preopen = new RootedPreopenDirectory("nvim", root.contents);
-  // /tmp を nvim root 内の tmp にマッピング（TMPDIR=/tmp で使えるように）
+  // Map /tmp to the nvim root tmp so TMPDIR=/tmp works
   preopenTmp = new RootedPreopenDirectory("tmp", root.contents.get("tmp")?.contents ?? new Map());
 
   const stdoutFd = new SinkFd(handleStdout);
@@ -275,17 +275,17 @@ async function startNvim({ inputBuffer, cols, rows }) {
   // Run in embedded mode (no --headless) so UI redraw events are produced for the remote client.
   const args = ["nvim", "--embed", "-u", "NORC", "--noplugin", "-i", "NONE", "-n"];
   args.push("-V1/nvim/tmp/verbose.log");
-  // 強制的に verbosefile を設定し、起動直後に exists('ui') を stderr に出す
+  // Force verbosefile early and log exists('ui') to stderr at startup
   args.push("-c", "set verbosefile=/nvim/tmp/verbose.log | set verbose=15");
   args.push("-c", "lua io.stderr:write('exists_ui='..vim.fn.exists('ui')..'\\n')");
-   // NVIM_LOG_FILE を確認しつつ明示的に追記してログ書き込み可否を検証
+  // Record NVIM_LOG_FILE and append once to verify we can write to it
   args.push("-c", "lua io.stderr:write('NVIM_LOG_FILE='..tostring(vim.env.NVIM_LOG_FILE)..'\\n'); local f=vim.env.NVIM_LOG_FILE or '/nvim/tmp/nvim.log'; pcall(vim.fn.writefile, {'log-test'}, f, 'a')");
-  // 画面が空白にならないよう、初期行を書いて redraw させる
+  // Write an initial line to avoid a blank screen and force a redraw
   args.push("-c", "set fillchars=eob:~");
   args.push("-c", "call setline(1,'wasm ready') | redraw!");
   // send a ping notification to confirm RPC channel (msgpack only; avoid stdout noise)
   args.push("-c", "lua vim.rpcnotify(0,'init-ping',123)");
-  // 強制的にファイル出力を試す（起動早期に /nvim/tmp/startuptime.log を書かせる）
+  // Force file output early by writing /nvim/tmp/startuptime.log
   args.push("--startuptime");
   args.push("/nvim/tmp/startuptime.log");
   const env = [
@@ -296,11 +296,11 @@ async function startNvim({ inputBuffer, cols, rows }) {
     "XDG_DATA_HOME=/nvim/home/.local/share",
     "XDG_STATE_HOME=/nvim/home/.local/state",
     "PATH=/usr/bin:/bin",
-    // /nvim/tmp は preopen root 配下で writable。
+    // /nvim/tmp is writable under the preopen root.
     "TMPDIR=/nvim/tmp",
     "LANG=en_US.UTF-8",
     "LC_ALL=en_US.UTF-8",
-    // 明示的に絶対パスで指定（CWD=/nvim）
+    // Explicit absolute path (CWD=/nvim)
     "NVIM_LOG_FILE=/nvim/tmp/nvim.log",
     "NVIM_LOG_LEVEL=TRACE",
   ];
@@ -336,7 +336,7 @@ async function startNvim({ inputBuffer, cols, rows }) {
     postMessage({ type: "console", level: "error", args: [`proc_exit(${code})`] });
     origProcExit(code);
   };
-  // path_open をフックして fd -> path を記録し、必要ならログを吐く
+  // Hook path_open to record fd -> path and emit logs when useful
   {
     let count = 0;
     const origPathOpen = wasiImport.path_open;
@@ -373,7 +373,7 @@ async function startNvim({ inputBuffer, cols, rows }) {
           args: [`path_open path=${pathStr} ret=${retCode} fd=${fdVal} openedFd=${openedFd ?? "-"} oflags=${JSON.stringify(args[4])}`],
         });
         count += 1;
-        // ログファイル系は少し待ってから強制読み出しを試みる
+        // For log files, wait briefly then force a read
         if (retCode === 0 && /nvim\.log/.test(pathStr)) {
           scheduleLogRead();
         }
@@ -381,7 +381,7 @@ async function startNvim({ inputBuffer, cols, rows }) {
       return retObj;
     };
   }
-  // fd_write をトレースして、どの fd に書き込んでいるか把握する
+  // Trace fd_write to see which fd receives data
   {
     const origFdWrite = wasiImport.fd_write;
     wasiImport.fd_write = (...args) => {
@@ -441,7 +441,7 @@ async function startNvim({ inputBuffer, cols, rows }) {
     }
   }, 800);
   startIoStatsTicker();
-  // 一定時間後に強制停止し、ログを確実に送る
+  // Ensure logs are flushed by forcing a stop after the timeout
   startKillTimer(() => {
     postStatus("nvim timeout kill (log dump)", true);
     emitIoStats("timeout-kill");
@@ -536,7 +536,7 @@ function dumpNow(tag = "manual-dump") {
     "/tmp/startuptime.log",
     "/tmp/nvim.log",
   ];
-  // 直近に開いた fd 由来のパスも試す（log-stream と同じパスで読む）
+  // Also try paths from recently opened fds (same as log-stream paths)
   for (const info of fdInfo.values()) {
     if (info?.path && !tryPaths.includes(info.path)) {
       tryPaths.push(info.path);
@@ -556,7 +556,7 @@ function dumpNow(tag = "manual-dump") {
           const size = child.data?.length ?? 0;
           const path = `/nvim/${p}/${name}`.replace(/\/+/g, "/");
           postMessage({ type: "log", path, text: head });
-          // stderr にもサイズを含めて可視化
+          // Also log the size to stderr for visibility
           postMessage({ type: "stderr", text: `${tag}: log head ${path} size=${size}\n${head}\n== end ==\n` });
           found = true;
         }
@@ -590,7 +590,7 @@ function dumpNow(tag = "manual-dump") {
   if (!found) {
     postMessage({ type: "stderr", text: `${tag}: no log files found. listings=${JSON.stringify(listing)}\n` });
   }
-  // コンソール向けにディレクトリ一覧を軽く送る（ノイズ最小化）
+  // Send minimal directory listings to the console (keep noise low)
   postMessage({
     type: "console",
     level: "log",
@@ -728,7 +728,7 @@ function decodeFile(file) {
 }
 
 function handleStdout(chunk) {
-  // 受信生データを短いhexでstderrに出す
+  // Emit raw received data as short hex on stderr
   if (DEBUG_RPC) {
     const hex = toHex(chunk, 64);
     postMessage({ type: "stderr", text: `stdout raw (${chunk.byteLength}b): ${hex}\n` });
@@ -751,7 +751,7 @@ function handleRpcChunk(chunk, source) {
     if (DEBUG_RPC_ERRORS) {
       postMessage({ type: "stderr", text: `[rpc-decode-error] ${safeToString(err)} (chunk bytes=${chunk?.byteLength ?? "?"})\n` });
     }
-    // デコーダ状態が壊れた可能性があるので再初期化
+    // Reset the decoder if its internal state may be broken
     rpcDecoder = new Decoder(handleMessage);
     rpcChunkCount = 0;
   }
@@ -803,14 +803,14 @@ function handleRedraw(events) {
     const name = ev[0];
     counts[name] = (counts[name] || 0) + 1;
   }
-  // イベント内容をそのまま stderr にダンプ（デバッグ用）
+  // Dump raw event payloads to stderr for debugging
   if (DEBUG_REDRAW && redrawLogCount < 4) {
     try {
       postMessage({ type: "stderr", text: `redraw raw: ${JSON.stringify(events)}\n` });
     } catch (_) {
       // ignore
     }
-    // デバッグ: 受信イベント数をメインに通知
+    // Debug: report how many events were received
     postMessage({ type: "console", level: "log", args: [`draw events=${events.length}`] });
     redrawLogCount += 1;
   }
@@ -944,7 +944,7 @@ function handleRedraw(events) {
         const cols = args[0];
         const rows = args[1];
         uiState.resize(cols, rows);
-        // ext_linegrid=false の場合でも即座に描画更新
+        // Update immediately even when ext_linegrid=false
         uiState.flush();
         break;
       }
@@ -1027,10 +1027,10 @@ function handleRedraw(events) {
         break;
     }
   }
-  // flushが来なくても送る（実際のグリッド内容のみ）
+  // Flush even if no explicit flush event arrives (send the grid as-is)
   uiState.flush();
 
-  // 一度だけ簡易サマリをstderrに出して、grid系イベントが届いているか確認する
+  // Emit a brief summary to stderr a few times to confirm grid events are flowing
   if (redrawSummaryCount < 6) {
     redrawSummaryCount += 1;
     const names = Object.keys(counts).filter(Boolean);
@@ -1139,7 +1139,7 @@ class UiState {
 
   flush() {
     const lines = this.grid.cells.map((row) => row.join(""));
-    // 常に draw-text を送って UI が必ず描画できるようにする
+    // Always send draw-text so the UI can render reliably
     if (DEBUG_REDRAW && flushDebugCount < 3) {
       flushDebugCount += 1;
       const preview = lines.slice(0, 6).map((l, i) => `${i}:${l}`).join("\n");
@@ -1239,7 +1239,7 @@ function collectLogFiles(root, limit = 10, headLimit = 12000) {
         continue;
       }
       if (!(node instanceof File)) continue;
-      // Avoid ChangeLogなどのノイズを拾わないように .log 拡張子だけを対象にする
+      // Only consider *.log files to avoid noise from ChangeLog and similar
       if (!isLog(name)) continue;
       const text = decodeFile(node);
       const head = trimLog(text).slice(0, headLimit);
@@ -1377,9 +1377,9 @@ function startLogPolling() {
     if (text && text !== lastNvim) {
       lastNvim = text;
       const head = trimLog(text);
-      // UI 用のログイベント
+      // Log events meant for the UI
       postMessage({ type: "log", path: "/nvim/tmp/nvim.log", text: head });
-      // Dump ボタン経由が壊れているときのため、変更検出時に stderr にも送る
+      // Also send to stderr when a change is detected in case the Dump button path is broken
       postMessage({
         type: "stderr",
         text: `[log-watch] /nvim/tmp/nvim.log size=${text.length}\n${head}\n== end ==\n`,

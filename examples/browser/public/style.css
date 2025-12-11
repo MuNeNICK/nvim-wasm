@@ -150,7 +150,7 @@ button.ghost {
   box-shadow: inset 0 0 0 1px rgba(143, 255, 217, 0.05);
 }
 
-/* 強制的に描画が見えるようにコントラストを上げる */
+/* Raise contrast so the rendered output is always easy to see */
 .grid {
   font-size: 14px;
   line-height: 1.2;
