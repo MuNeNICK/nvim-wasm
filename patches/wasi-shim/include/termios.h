@@ -7,19 +7,41 @@ typedef unsigned int speed_t;
 typedef unsigned int tcflag_t;
 
 #ifndef NCCS
-#  define NCCS 1
+#  define NCCS 20
 #endif
-#ifndef VMIN
-#  define VMIN 0
-#endif
-#ifndef VTIME
-#  define VTIME 0
+
+#ifndef VINTR
+#  define VINTR 0
 #endif
 #ifndef VQUIT
-#  define VQUIT 0
+#  define VQUIT 1
+#endif
+#ifndef VERASE
+#  define VERASE 2
+#endif
+#ifndef VKILL
+#  define VKILL 3
+#endif
+#ifndef VEOF
+#  define VEOF 4
+#endif
+#ifndef VTIME
+#  define VTIME 5
+#endif
+#ifndef VMIN
+#  define VMIN 6
+#endif
+#ifndef VSTART
+#  define VSTART 8
+#endif
+#ifndef VSTOP
+#  define VSTOP 9
 #endif
 #ifndef VSUSP
-#  define VSUSP 0
+#  define VSUSP 10
+#endif
+#ifndef VWERASE
+#  define VWERASE 14
 #endif
 
 #ifndef IXON

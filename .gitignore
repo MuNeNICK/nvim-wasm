@@ -1,5 +1,9 @@
 .toolchains/
 build-wasm/
 build-wasm-deps/
+build-host/
 CopyOfCMakeCache.txt
 .DS_Store
+examples/browser/public/nvim.wasm
+examples/browser/public/nvim-runtime.tar.gz
+node_modules/

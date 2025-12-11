@@ -1,8 +1,7 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 73d5aff..9df0d03 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -185,6 +185,23 @@ set(uv_sources
+diff -ruN a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt	2025-04-25 18:50:27.000000000 +0900
++++ b/CMakeLists.txt	2025-12-07 12:46:44.299901226 +0900
+@@ -185,6 +185,23 @@
      src/uv-data-getter-setters.c
      src/version.c)
  
@@ -26,10 +25,9 @@ index 73d5aff..9df0d03 100644
  if(WIN32)
    list(APPEND uv_defines WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00 _CRT_DECLARE_NONSTDC_NAMES=0)
    list(APPEND uv_libraries
-diff --git a/include/uv/unix.h b/include/uv/unix.h
-index 7c97202..0e007dd 100644
---- a/include/uv/unix.h
-+++ b/include/uv/unix.h
+diff -ruN a/include/uv/unix.h b/include/uv/unix.h
+--- a/include/uv/unix.h	2025-04-25 18:50:27.000000000 +0900
++++ b/include/uv/unix.h	2025-12-07 12:46:44.300026433 +0900
 @@ -27,18 +27,27 @@
  #include <fcntl.h>
  #include <dirent.h>
@@ -60,7 +58,7 @@ index 7c97202..0e007dd 100644
  #endif
  #include <pthread.h>
  #include <signal.h>
-@@ -383,6 +392,11 @@ typedef struct {
+@@ -383,6 +392,11 @@
    struct termios orig_termios;                                                \
    int mode;
  
@@ -72,18 +70,106 @@ index 7c97202..0e007dd 100644
  #define UV_SIGNAL_PRIVATE_FIELDS                                              \
    /* RB_ENTRY(uv_signal_s) tree_entry; */                                     \
    struct {                                                                    \
-diff --git a/src/wasi/stub.c b/src/wasi/stub.c
-new file mode 100644
-index 0000000..960f575
---- /dev/null
+diff -ruN a/src/wasi/stub.c b/src/wasi/stub.c
+--- a/src/wasi/stub.c
 +++ b/src/wasi/stub.c
-@@ -0,0 +1,1910 @@
+@@ -0,0 +1,2147 @@
 +#include "uv.h"
 +#include <string.h>
 +#include <stdlib.h>
 +#include <time.h>
++#include <unistd.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <limits.h>
++#ifndef F_DUPFD
++#define F_DUPFD 0
++#endif
++#ifndef F_DUPFD_CLOEXEC
++#define F_DUPFD_CLOEXEC 0x400
++#endif
 +
 +#define UV__UNUSED(x) ((void)(x))
++static int wasi_fill_x(char* path, unsigned attempt) {
++  static const char alpha[] = "abcdefghijklmnopqrstuvwxyz0123456789";
++  size_t n = strlen(path);
++  int count = 0;
++  for (size_t i = 0; i < n; i++) {
++    if (path[i] == 'X') {
++      path[i] = alpha[(attempt + (unsigned)i * 17U) % (sizeof(alpha) - 1)];
++      count++;
++    }
++  }
++  return count;
++}
++
++static char* wasi_mkdtemp(char* tpl) {
++  if (!tpl) {
++    errno = EINVAL;
++    return NULL;
++  }
++  char* orig = strdup(tpl);
++  if (!orig) {
++    errno = ENOMEM;
++    return NULL;
++  }
++  char* ret = NULL;
++  for (unsigned attempt = 0; attempt < 256; attempt++) {
++    strcpy(tpl, orig);
++    if (wasi_fill_x(tpl, attempt) == 0) {
++      errno = EINVAL;
++      break;
++    }
++    if (mkdir(tpl, 0700) == 0) {
++      ret = tpl;
++      break;
++    }
++    if (errno != EEXIST) {
++      break;
++    }
++  }
++  free(orig);
++  return ret;
++}
++
++static int wasi_mkstemp(char* tpl) {
++  if (!tpl) {
++    errno = EINVAL;
++    return -1;
++  }
++  char* orig = strdup(tpl);
++  if (!orig) {
++    errno = ENOMEM;
++    return -1;
++  }
++  int fd = -1;
++  for (unsigned attempt = 0; attempt < 256; attempt++) {
++    strcpy(tpl, orig);
++    if (wasi_fill_x(tpl, attempt) == 0) {
++      errno = EINVAL;
++      break;
++    }
++    fd = open(tpl, O_RDWR | O_CREAT | O_EXCL, 0600);
++    if (fd >= 0) {
++      break;
++    }
++    if (errno != EEXIST) {
++      break;
++    }
++  }
++  free(orig);
++  return fd;
++}
++
++int fcntl(int fd, int cmd, ...) {
++  if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC) {
++    return fd;  // Best effort: reuse same fd under WASI.
++  }
++  errno = ENOSYS;
++  return -1;
++}
 +
 +unsigned int uv_version(void) {
 +  return UV_VERSION_HEX;
@@ -138,10 +224,104 @@ index 0000000..960f575
 +  return UV_ENOSYS;
 +}
 +
-+int uv_run(uv_loop_t* arg0, uv_run_mode mode) {
-+  UV__UNUSED(arg0); UV__UNUSED(mode); return 0;
-+}
++#define WASI_MAX_IDLE 32
++#define WASI_MAX_TIMER 32
++#define WASI_MAX_ASYNC 32
++typedef struct {
++  uv_idle_t* idle;
++  uv_idle_cb cb;
++  uv_loop_t* loop;
++  int active;
++} wasi_idle_slot;
 +
++typedef struct {
++  uv_timer_t* handle;
++  uv_timer_cb cb;
++  uv_loop_t* loop;
++  uint64_t due_ns;
++  uint64_t repeat_ns;
++  int active;
++} wasi_timer_slot;
++
++typedef struct {
++  uv_async_t* handle;
++  uv_async_cb cb;
++  uv_loop_t* loop;
++  int pending;
++} wasi_async_slot;
++
++static wasi_idle_slot wasi_idles[WASI_MAX_IDLE];
++static wasi_timer_slot wasi_timers[WASI_MAX_TIMER];
++static wasi_async_slot wasi_asyncs[WASI_MAX_ASYNC];
++static uv_stream_t* wasi_stdin_stream = NULL;
++static uv_alloc_cb wasi_stdin_alloc = NULL;
++static uv_read_cb wasi_stdin_read = NULL;
++int uv_run(uv_loop_t* arg0, uv_run_mode mode) {
++  UV__UNUSED(mode);
++  uv_loop_t* loop = arg0 ? arg0 : uv_default_loop();
++  int did_work = 0;
++
++  uint64_t now_ns = uv_hrtime();
++
++  for (int i = 0; i < WASI_MAX_IDLE; i++) {
++    if (wasi_idles[i].active && (!wasi_idles[i].loop || wasi_idles[i].loop == loop)
++        && wasi_idles[i].cb) {
++      wasi_idles[i].cb(wasi_idles[i].idle);
++      did_work = 1;
++    }
++  }
++
++  for (int i = 0; i < WASI_MAX_TIMER; i++) {
++    if (wasi_timers[i].active && wasi_timers[i].cb
++        && (!wasi_timers[i].loop || wasi_timers[i].loop == loop)) {
++      if (wasi_timers[i].due_ns <= now_ns) {
++        wasi_timers[i].cb(wasi_timers[i].handle);
++        did_work = 1;
++        if (wasi_timers[i].repeat_ns) {
++          wasi_timers[i].due_ns = now_ns + wasi_timers[i].repeat_ns;
++        } else {
++          wasi_timers[i].active = 0;
++        }
++      }
++    }
++  }
++
++  for (int i = 0; i < WASI_MAX_ASYNC; i++) {
++    if (wasi_asyncs[i].pending && wasi_asyncs[i].cb
++        && (!wasi_asyncs[i].loop || wasi_asyncs[i].loop == loop)) {
++      wasi_asyncs[i].pending = 0;
++      wasi_asyncs[i].cb(wasi_asyncs[i].handle);
++      did_work = 1;
++    }
++  }
++
++  if (wasi_stdin_stream && wasi_stdin_alloc && wasi_stdin_read) {
++    uv_buf_t buf;
++    wasi_stdin_alloc(wasi_stdin_stream, 4096, &buf);
++    if (buf.base && buf.len > 0) {
++      int fd = 0;
++      if (wasi_stdin_stream->io_watcher.fd >= 0) {
++        fd = wasi_stdin_stream->io_watcher.fd;
++      }
++      ssize_t n = read(fd, buf.base, buf.len);
++      if (n > 0) {
++        wasi_stdin_read(wasi_stdin_stream, n, &buf);
++        did_work = 1;
++      } else if (n == 0) {
++        wasi_stdin_read(wasi_stdin_stream, UV_EOF, &buf);
++        did_work = 1;
++      } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
++        wasi_stdin_read(wasi_stdin_stream, -errno, &buf);
++        did_work = 1;
++      }
++    }
++  }
++
++  if (!did_work) {
++    usleep(1000);
++  }
++  return 0;
++}
 +void uv_stop(uv_loop_t* arg0) {
 +  if (arg0) arg0->stop_flag = 1;
 +}
@@ -159,11 +339,13 @@ index 0000000..960f575
 +}
 +
 +void uv_update_time(uv_loop_t* arg0) {
-+  if (arg0) arg0->time = uv_now(arg0);
++  if (arg0) arg0->time = uv_hrtime() / 1000000ULL;
 +}
 +
 +uint64_t uv_now(const uv_loop_t* arg0) {
-+  if (!arg0) return 0; return arg0->time;
++  if (!arg0) return 0;
++  if (arg0->time) return arg0->time;
++  return uv_hrtime() / 1000000ULL;
 +}
 +
 +int uv_backend_fd(const uv_loop_t* arg0) {
@@ -343,59 +525,65 @@ index 0000000..960f575
 +  UV__UNUSED(stream);
 +  UV__UNUSED(backlog);
 +  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  // Pretend listen succeeded; no real inbound connections in WASI demo.
++  return 0;
 +}
 +
 +int uv_accept(uv_stream_t* server, uv_stream_t* client) {
 +  UV__UNUSED(server);
 +  UV__UNUSED(client);
-+  return UV_ENOSYS;
++  return 0;
 +}
 +
 +int uv_read_start(uv_stream_t* arg0, uv_alloc_cb alloc_cb, uv_read_cb read_cb) {
-+  UV__UNUSED(arg0);
-+  UV__UNUSED(alloc_cb);
-+  UV__UNUSED(read_cb);
-+  return UV_ENOSYS;
++  wasi_stdin_stream = arg0;
++  wasi_stdin_alloc = alloc_cb;
++  wasi_stdin_read = read_cb;
++  return 0;
 +}
 +
 +int uv_read_stop(uv_stream_t* arg0) {
 +  UV__UNUSED(arg0);
-+  return UV_ENOSYS;
++  wasi_stdin_stream = NULL;
++  wasi_stdin_alloc = NULL;
++  wasi_stdin_read = NULL;
++  return 0;
 +}
 +
 +int uv_write(uv_write_t* req, uv_stream_t* handle, const uv_buf_t bufs[], unsigned int nbufs, uv_write_cb cb) {
-+  UV__UNUSED(req);
-+  UV__UNUSED(handle);
-+  UV__UNUSED(bufs);
-+  UV__UNUSED(nbufs);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  int fd = 1;
++  if (handle && handle->io_watcher.fd >= 0) {
++    fd = handle->io_watcher.fd;
++  }
++  ssize_t written = 0;
++  for (unsigned int i = 0; i < nbufs; i++) {
++    if (bufs[i].base && bufs[i].len > 0) {
++      ssize_t n = write(fd, bufs[i].base, bufs[i].len);
++      if (n > 0) written += n;
++    }
++  }
++  if (cb) cb(req, written < 0 ? -1 : 0);
++  return 0;
 +}
 +
 +int uv_write2(uv_write_t* req, uv_stream_t* handle, const uv_buf_t bufs[], unsigned int nbufs, uv_stream_t* send_handle, uv_write_cb cb) {
-+  UV__UNUSED(req);
-+  UV__UNUSED(handle);
-+  UV__UNUSED(bufs);
-+  UV__UNUSED(nbufs);
 +  UV__UNUSED(send_handle);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  return uv_write(req, handle, bufs, nbufs, cb);
 +}
 +
 +int uv_try_write(uv_stream_t* handle, const uv_buf_t bufs[], unsigned int nbufs) {
 +  UV__UNUSED(handle);
-+  UV__UNUSED(bufs);
-+  UV__UNUSED(nbufs);
-+  return UV_ENOSYS;
++  for (unsigned int i = 0; i < nbufs; i++) {
++    if (bufs[i].base && bufs[i].len > 0) {
++      write(1, bufs[i].base, bufs[i].len);
++    }
++  }
++  return 0;
 +}
 +
 +int uv_try_write2(uv_stream_t* handle, const uv_buf_t bufs[], unsigned int nbufs, uv_stream_t* send_handle) {
-+  UV__UNUSED(handle);
-+  UV__UNUSED(bufs);
-+  UV__UNUSED(nbufs);
 +  UV__UNUSED(send_handle);
-+  return UV_ENOSYS;
++  return uv_try_write(handle, bufs, nbufs);
 +}
 +
 +int uv_is_readable(const uv_stream_t* handle) {
@@ -675,27 +863,35 @@ index 0000000..960f575
 +}
 +
 +uv_handle_type uv_guess_handle(uv_file file) {
-+  UV__UNUSED(file);
-+  return 0;
++  // Treat stdio as pipes so uv_write path is used; everything else as file.
++  if (file >= 0 && file <= 2) {
++    return UV_NAMED_PIPE;
++  }
++  return UV_FILE;
 +}
 +
 +int uv_pipe_init(uv_loop_t* arg0, uv_pipe_t* handle, int ipc) {
-+  UV__UNUSED(arg0);
-+  UV__UNUSED(handle);
 +  UV__UNUSED(ipc);
-+  return UV_ENOSYS;
++  if (handle) {
++    memset(handle, 0, sizeof(*handle));
++    handle->type = UV_NAMED_PIPE;
++    handle->loop = arg0;
++    handle->io_watcher.fd = -1;
++  }
++  return 0;  // no-op success on WASI
 +}
 +
 +int uv_pipe_open(uv_pipe_t* arg0, uv_file file) {
-+  UV__UNUSED(arg0);
-+  UV__UNUSED(file);
-+  return UV_ENOSYS;
++  if (arg0) {
++    arg0->io_watcher.fd = file;
++  }
++  return 0;
 +}
 +
 +int uv_pipe_bind(uv_pipe_t* handle, const char* name) {
 +  UV__UNUSED(handle);
 +  UV__UNUSED(name);
-+  return UV_ENOSYS;
++  return 0;
 +}
 +
 +int uv_pipe_bind2(uv_pipe_t* handle, const char* name, size_t namelen, unsigned int flags) {
@@ -703,14 +899,14 @@ index 0000000..960f575
 +  UV__UNUSED(name);
 +  UV__UNUSED(namelen);
 +  UV__UNUSED(flags);
-+  return UV_ENOSYS;
++  return 0;
 +}
 +
 +void uv_pipe_connect(uv_connect_t* req, uv_pipe_t* handle, const char* name, uv_connect_cb cb) {
 +  UV__UNUSED(req);
 +  UV__UNUSED(handle);
 +  UV__UNUSED(name);
-+  UV__UNUSED(cb);
++  if (cb) cb(req, 0);
 +}
 +
 +int uv_pipe_connect2(uv_connect_t* req, uv_pipe_t* handle, const char* name, size_t namelen, unsigned int flags, uv_connect_cb cb) {
@@ -719,8 +915,8 @@ index 0000000..960f575
 +  UV__UNUSED(name);
 +  UV__UNUSED(namelen);
 +  UV__UNUSED(flags);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  if (cb) cb(req, 0);
++  return 0;
 +}
 +
 +int uv_pipe_getsockname(const uv_pipe_t* handle, char* buffer, size_t* size) {
@@ -744,7 +940,7 @@ index 0000000..960f575
 +
 +int uv_pipe_pending_count(uv_pipe_t* handle) {
 +  UV__UNUSED(handle);
-+  return UV_ENOSYS;
++  return 0;
 +}
 +
 +uv_handle_type uv_pipe_pending_type(uv_pipe_t* handle) {
@@ -819,70 +1015,140 @@ index 0000000..960f575
 +}
 +
 +int uv_idle_init(uv_loop_t* arg0, uv_idle_t* idle) {
-+  UV__UNUSED(arg0);
-+  UV__UNUSED(idle);
-+  return UV_ENOSYS;
++  if (!idle) return UV_EINVAL;
++  memset(idle, 0, sizeof(*idle));
++  idle->loop = arg0 ? arg0 : uv_default_loop();
++  idle->type = UV_IDLE;
++  return 0;
 +}
 +
 +int uv_idle_start(uv_idle_t* idle, uv_idle_cb cb) {
-+  UV__UNUSED(idle);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  if (!idle || !cb) return UV_EINVAL;
++  for (int i = 0; i < WASI_MAX_IDLE; i++) {
++    if (!wasi_idles[i].active || wasi_idles[i].idle == idle) {
++      wasi_idles[i].idle = idle;
++      wasi_idles[i].cb = cb;
++      wasi_idles[i].loop = idle->loop;
++      wasi_idles[i].active = 1;
++      return 0;
++    }
++  }
++  return UV_ENOMEM;
 +}
 +
 +int uv_idle_stop(uv_idle_t* idle) {
-+  UV__UNUSED(idle);
-+  return UV_ENOSYS;
++  if (!idle) return UV_EINVAL;
++  for (int i = 0; i < WASI_MAX_IDLE; i++) {
++    if (wasi_idles[i].idle == idle) {
++      wasi_idles[i].active = 0;
++    }
++  }
++  return 0;
 +}
 +
 +int uv_async_init(uv_loop_t* arg0, uv_async_t* async, uv_async_cb async_cb) {
-+  UV__UNUSED(arg0);
-+  UV__UNUSED(async);
-+  UV__UNUSED(async_cb);
-+  return UV_ENOSYS;
++  if (!async) return UV_EINVAL;
++  memset(async, 0, sizeof(*async));
++  async->loop = arg0 ? arg0 : uv_default_loop();
++  async->async_cb = async_cb;
++  for (int i = 0; i < WASI_MAX_ASYNC; i++) {
++    if (!wasi_asyncs[i].handle || wasi_asyncs[i].handle == async) {
++      wasi_asyncs[i].handle = async;
++      wasi_asyncs[i].cb = async_cb;
++      wasi_asyncs[i].loop = async->loop;
++      wasi_asyncs[i].pending = 0;
++      return 0;
++    }
++  }
++  return UV_ENOMEM;
 +}
 +
 +int uv_async_send(uv_async_t* async) {
-+  UV__UNUSED(async);
-+  return UV_ENOSYS;
++  if (!async) return UV_EINVAL;
++  for (int i = 0; i < WASI_MAX_ASYNC; i++) {
++    if (wasi_asyncs[i].handle == async) {
++      wasi_asyncs[i].pending = 1;
++      return 0;
++    }
++  }
++  return UV_EINVAL;
 +}
 +
 +int uv_timer_init(uv_loop_t* arg0, uv_timer_t* handle) {
-+  UV__UNUSED(arg0);
-+  UV__UNUSED(handle);
-+  return UV_ENOSYS;
++  if (!handle) return UV_EINVAL;
++  memset(handle, 0, sizeof(*handle));
++  handle->loop = arg0 ? arg0 : uv_default_loop();
++  handle->type = UV_TIMER;
++  return 0;
 +}
 +
 +int uv_timer_start(uv_timer_t* handle, uv_timer_cb cb, uint64_t timeout, uint64_t repeat) {
-+  UV__UNUSED(handle);
-+  UV__UNUSED(cb);
-+  UV__UNUSED(timeout);
-+  UV__UNUSED(repeat);
-+  return UV_ENOSYS;
++  if (!handle || !cb) return UV_EINVAL;
++  uint64_t now = uv_hrtime();
++  for (int i = 0; i < WASI_MAX_TIMER; i++) {
++    if (!wasi_timers[i].active || wasi_timers[i].handle == handle) {
++      wasi_timers[i].handle = handle;
++      wasi_timers[i].cb = cb;
++      wasi_timers[i].loop = handle->loop;
++      wasi_timers[i].due_ns = now + (timeout * 1000000ULL);
++      wasi_timers[i].repeat_ns = repeat * 1000000ULL;
++      wasi_timers[i].active = 1;
++      return 0;
++    }
++  }
++  return UV_ENOMEM;
 +}
 +
 +int uv_timer_stop(uv_timer_t* handle) {
-+  UV__UNUSED(handle);
-+  return UV_ENOSYS;
++  if (!handle) return UV_EINVAL;
++  for (int i = 0; i < WASI_MAX_TIMER; i++) {
++    if (wasi_timers[i].handle == handle) {
++      wasi_timers[i].active = 0;
++    }
++  }
++  return 0;
 +}
 +
 +int uv_timer_again(uv_timer_t* handle) {
-+  UV__UNUSED(handle);
-+  return UV_ENOSYS;
++  if (!handle) return UV_EINVAL;
++  for (int i = 0; i < WASI_MAX_TIMER; i++) {
++    if (wasi_timers[i].handle == handle && wasi_timers[i].repeat_ns > 0) {
++      wasi_timers[i].due_ns = uv_hrtime() + wasi_timers[i].repeat_ns;
++      wasi_timers[i].active = 1;
++      return 0;
++    }
++  }
++  return UV_EINVAL;
 +}
 +
 +void uv_timer_set_repeat(uv_timer_t* handle, uint64_t repeat) {
-+  UV__UNUSED(handle);
-+  UV__UNUSED(repeat);
++  if (!handle) return;
++  for (int i = 0; i < WASI_MAX_TIMER; i++) {
++    if (wasi_timers[i].handle == handle) {
++      wasi_timers[i].repeat_ns = repeat * 1000000ULL;
++    }
++  }
 +}
 +
 +uint64_t uv_timer_get_repeat(const uv_timer_t* handle) {
-+  UV__UNUSED(handle);
++  if (!handle) return 0;
++  for (int i = 0; i < WASI_MAX_TIMER; i++) {
++    if (wasi_timers[i].handle == handle) {
++      return wasi_timers[i].repeat_ns / 1000000ULL;
++    }
++  }
 +  return 0;
 +}
 +
 +uint64_t uv_timer_get_due_in(const uv_timer_t* handle) {
-+  UV__UNUSED(handle);
++  if (!handle) return 0;
++  uint64_t now = uv_hrtime();
++  for (int i = 0; i < WASI_MAX_TIMER; i++) {
++    if (wasi_timers[i].handle == handle && wasi_timers[i].active) {
++      if (wasi_timers[i].due_ns <= now) return 0;
++      return (wasi_timers[i].due_ns - now) / 1000000ULL;
++    }
++  }
 +  return 0;
 +}
 +
@@ -1165,60 +1431,127 @@ index 0000000..960f575
 +}
 +
 +uv_stat_t* uv_fs_get_statbuf(uv_fs_t* arg0) {
-+  UV__UNUSED(arg0);
-+  return NULL;
++  return arg0 ? &arg0->statbuf : NULL;
++}
++
++static void wasi_fs_req_reset(uv_fs_t* req, uv_loop_t* loop, uv_fs_type type, const char* path, uv_fs_cb cb) {
++  if (!req) return;
++  req->fs_type = type;
++  req->loop = loop ? loop : uv_default_loop();
++  req->cb = cb;
++  req->path = path;
++  req->ptr = NULL;
++  req->result = 0;
++  memset(&req->statbuf, 0, sizeof(req->statbuf));
++}
++
++static void wasi_stat_to_uv(const struct stat* in, uv_stat_t* out) {
++  if (!in || !out) return;
++  out->st_dev = in->st_dev;
++  out->st_mode = in->st_mode;
++  out->st_nlink = in->st_nlink;
++  out->st_uid = in->st_uid;
++  out->st_gid = in->st_gid;
++  out->st_rdev = in->st_rdev;
++  out->st_ino = in->st_ino;
++  out->st_size = in->st_size;
++  out->st_blksize = in->st_blksize;
++  out->st_blocks = in->st_blocks;
++  out->st_flags = 0;
++  out->st_gen = 0;
++  out->st_atim.tv_sec = in->st_atim.tv_sec;
++  out->st_atim.tv_nsec = in->st_atim.tv_nsec;
++  out->st_mtim.tv_sec = in->st_mtim.tv_sec;
++  out->st_mtim.tv_nsec = in->st_mtim.tv_nsec;
++  out->st_ctim.tv_sec = in->st_ctim.tv_sec;
++  out->st_ctim.tv_nsec = in->st_ctim.tv_nsec;
++  out->st_birthtim = out->st_ctim;
 +}
 +
 +void uv_fs_req_cleanup(uv_fs_t* req) {
-+  UV__UNUSED(req);
++  if (!req) return;
++  req->cb = NULL;
++  req->path = NULL;
++  req->ptr = NULL;
 +}
 +
 +int uv_fs_close(uv_loop_t* loop, uv_fs_t* req, uv_file file, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(file);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_CLOSE, NULL, cb);
++  int rc = close(file);
++  req->result = (rc == 0) ? 0 : -errno;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_open(uv_loop_t* loop, uv_fs_t* req, const char* path, int flags, int mode, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(path);
-+  UV__UNUSED(flags);
-+  UV__UNUSED(mode);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_OPEN, path, cb);
++  int fd = open(path, flags, mode);
++  req->result = (fd >= 0) ? fd : -errno;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_read(uv_loop_t* loop, uv_fs_t* req, uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(file);
-+  UV__UNUSED(bufs);
-+  UV__UNUSED(nbufs);
-+  UV__UNUSED(offset);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_READ, NULL, cb);
++  ssize_t total = 0;
++  int64_t pos = offset;
++  for (unsigned int i = 0; i < nbufs; i++) {
++    const uv_buf_t* b = &bufs[i];
++    if (!b->base || b->len == 0) continue;
++    ssize_t n = (offset < 0) ? read(file, b->base, b->len)
++                             : pread(file, b->base, b->len, pos);
++    if (n < 0) {
++      total = -errno;
++      break;
++    }
++    total += n;
++    if (offset >= 0) pos += n;
++    if (n == 0 || (offset < 0 && (size_t)n < b->len)) {
++      break;
++    }
++  }
++  req->result = total;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_unlink(uv_loop_t* loop, uv_fs_t* req, const char* path, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(path);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_UNLINK, path, cb);
++  int rc = unlink(path);
++  req->result = (rc == 0) ? 0 : -errno;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_write(uv_loop_t* loop, uv_fs_t* req, uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(file);
-+  UV__UNUSED(bufs);
-+  UV__UNUSED(nbufs);
-+  UV__UNUSED(offset);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_WRITE, NULL, cb);
++  ssize_t total = 0;
++  int64_t pos = offset;
++  for (unsigned int i = 0; i < nbufs; i++) {
++    const uv_buf_t* b = &bufs[i];
++    if (!b->base || b->len == 0) continue;
++    ssize_t n = -1;
++    if (offset < 0) {
++      n = write(file, b->base, b->len);
++    } else {
++      n = pwrite(file, b->base, b->len, pos);
++      if (n < 0 && (errno == ESPIPE || errno == EBADF)) {
++        n = write(file, b->base, b->len);
++      }
++    }
++    if (n < 0) {
++      total = -errno;
++      break;
++    }
++    total += n;
++    if (offset >= 0) pos += n;
++    if (n == 0 || (offset < 0 && (size_t)n < b->len)) {
++      break;
++    }
++  }
++  req->result = total;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_copyfile(uv_loop_t* loop, uv_fs_t* req, const char* path, const char* new_path, int flags, uv_fs_cb cb) {
@@ -1232,36 +1565,68 @@ index 0000000..960f575
 +}
 +
 +int uv_fs_mkdir(uv_loop_t* loop, uv_fs_t* req, const char* path, int mode, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(path);
-+  UV__UNUSED(mode);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_MKDIR, path, cb);
++  int rc = mkdir(path, mode);
++  req->result = (rc == 0) ? 0 : -errno;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_mkdtemp(uv_loop_t* loop, uv_fs_t* req, const char* tpl, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(tpl);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_MKDTEMP, tpl, cb);
++  if (!tpl) {
++    req->result = -EINVAL;
++    if (cb) cb(req);
++    return cb ? 0 : (int)req->result;
++  }
++  char* buf = strdup(tpl);
++  if (!buf) {
++    req->result = -ENOMEM;
++    if (cb) cb(req);
++    return cb ? 0 : (int)req->result;
++  }
++  if (!wasi_mkdtemp(buf)) {
++    req->result = -errno;
++    free(buf);
++  } else {
++    req->path = buf;
++    req->ptr = buf;
++    req->result = 0;
++  }
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
-+
 +int uv_fs_mkstemp(uv_loop_t* loop, uv_fs_t* req, const char* tpl, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(tpl);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_MKSTEMP, tpl, cb);
++  if (!tpl) {
++    req->result = -EINVAL;
++    if (cb) cb(req);
++    return cb ? 0 : (int)req->result;
++  }
++  char* buf = strdup(tpl);
++  if (!buf) {
++    req->result = -ENOMEM;
++    if (cb) cb(req);
++    return cb ? 0 : (int)req->result;
++  }
++  int fd = wasi_mkstemp(buf);
++  if (fd < 0) {
++    req->result = -errno;
++    free(buf);
++  } else {
++    req->path = buf;
++    req->ptr = NULL;
++    req->result = fd;
++  }
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
-+
 +int uv_fs_rmdir(uv_loop_t* loop, uv_fs_t* req, const char* path, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(path);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_RMDIR, path, cb);
++  int rc = rmdir(path);
++  req->result = (rc == 0) ? 0 : -errno;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_scandir(uv_loop_t* loop, uv_fs_t* req, const char* path, int flags, uv_fs_cb cb) {
@@ -1304,53 +1669,63 @@ index 0000000..960f575
 +}
 +
 +int uv_fs_stat(uv_loop_t* loop, uv_fs_t* req, const char* path, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(path);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_STAT, path, cb);
++  struct stat st;
++  int rc = stat(path, &st);
++  if (rc == 0) {
++    wasi_stat_to_uv(&st, &req->statbuf);
++    req->result = 0;
++  } else {
++    req->result = -errno;
++  }
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_fstat(uv_loop_t* loop, uv_fs_t* req, uv_file file, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(file);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_FSTAT, NULL, cb);
++  struct stat st;
++  int rc = fstat(file, &st);
++  if (rc == 0) {
++    wasi_stat_to_uv(&st, &req->statbuf);
++    req->result = 0;
++  } else {
++    req->result = -errno;
++  }
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_rename(uv_loop_t* loop, uv_fs_t* req, const char* path, const char* new_path, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(path);
-+  UV__UNUSED(new_path);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_RENAME, path, cb);
++  int rc = rename(path, new_path);
++  req->result = (rc == 0) ? 0 : -errno;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_fsync(uv_loop_t* loop, uv_fs_t* req, uv_file file, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(file);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_FSYNC, NULL, cb);
++  int rc = fsync(file);
++  req->result = (rc == 0) ? 0 : -errno;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_fdatasync(uv_loop_t* loop, uv_fs_t* req, uv_file file, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(file);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_FDATASYNC, NULL, cb);
++  int rc = fsync(file);
++  req->result = (rc == 0) ? 0 : -errno;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_ftruncate(uv_loop_t* loop, uv_fs_t* req, uv_file file, int64_t offset, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(file);
-+  UV__UNUSED(offset);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_FTRUNCATE, NULL, cb);
++  int rc = ftruncate(file, offset);
++  req->result = (rc == 0) ? 0 : -errno;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_sendfile(uv_loop_t* loop, uv_fs_t* req, uv_file out_fd, uv_file in_fd, int64_t in_offset, size_t length, uv_fs_cb cb) {
@@ -1365,12 +1740,11 @@ index 0000000..960f575
 +}
 +
 +int uv_fs_access(uv_loop_t* loop, uv_fs_t* req, const char* path, int mode, uv_fs_cb cb) {
-+  UV__UNUSED(loop);
-+  UV__UNUSED(req);
-+  UV__UNUSED(path);
-+  UV__UNUSED(mode);
-+  UV__UNUSED(cb);
-+  return UV_ENOSYS;
++  wasi_fs_req_reset(req, loop, UV_FS_ACCESS, path, cb);
++  int rc = access(path, mode);
++  req->result = (rc == 0) ? 0 : -errno;
++  if (cb) cb(req);
++  return cb ? 0 : (int)req->result;
 +}
 +
 +int uv_fs_chmod(uv_loop_t* loop, uv_fs_t* req, const char* path, int mode, uv_fs_cb cb) {
@@ -1691,21 +2065,31 @@ index 0000000..960f575
 +}
 +
 +int uv_clock_gettime(uv_clock_id clock_id, uv_timespec64_t* ts) {
-+  UV__UNUSED(clock_id);
-+  UV__UNUSED(ts);
-+  return UV_ENOSYS;
-+}
-+
-+uint64_t uv_hrtime(void) {
++  struct timespec t;
++  if (clock_gettime(clock_id == UV_CLOCK_MONOTONIC ? CLOCK_MONOTONIC : CLOCK_REALTIME, &t) != 0) {
++    return UV_EINVAL;
++  }
++  if (ts) {
++    ts->tv_sec = t.tv_sec;
++    ts->tv_nsec = t.tv_nsec;
++  }
 +  return 0;
 +}
 +
++uint64_t uv_hrtime(void) {
++  struct timespec t;
++  if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) {
++    return 0;
++  }
++  return (uint64_t)t.tv_sec * 1000000000ULL + (uint64_t)t.tv_nsec;
++}
++
 +void uv_sleep(unsigned int msec) {
-+  UV__UNUSED(msec);
++  usleep(msec * 1000);
 +}
 +
 +void uv_disable_stdio_inheritance(void) {
-+
++  // noop stub
 +}
 +
 +int uv_dlopen(const char* filename, uv_lib_t* lib) {
@@ -1731,13 +2115,13 @@ index 0000000..960f575
 +}
 +
 +int uv_mutex_init(uv_mutex_t* handle) {
-+  UV__UNUSED(handle);
-+  return UV_ENOSYS;
++  if (!handle) return UV_EINVAL;
++  return 0;
 +}
 +
 +int uv_mutex_init_recursive(uv_mutex_t* handle) {
-+  UV__UNUSED(handle);
-+  return UV_ENOSYS;
++  if (!handle) return UV_EINVAL;
++  return 0;
 +}
 +
 +void uv_mutex_destroy(uv_mutex_t* handle) {
@@ -1749,8 +2133,8 @@ index 0000000..960f575
 +}
 +
 +int uv_mutex_trylock(uv_mutex_t* handle) {
-+  UV__UNUSED(handle);
-+  return UV_ENOSYS;
++  if (!handle) return UV_EINVAL;
++  return 0;
 +}
 +
 +void uv_mutex_unlock(uv_mutex_t* handle) {
@@ -1860,13 +2244,24 @@ index 0000000..960f575
 +}
 +
 +void uv_once(uv_once_t* guard, void (*callback)(void)) {
-+  UV__UNUSED(guard);
-+  UV__UNUSED(callback);
++  // Best-effort one-shot; WASI build is single-threaded.
++  if (guard && guard->ran) {
++    return;
++  }
++  if (callback) {
++    callback();
++  }
++  if (guard) {
++    guard->ran = 1;
++  }
 +}
 +
 +int uv_key_create(uv_key_t* key) {
-+  UV__UNUSED(key);
-+  return UV_ENOSYS;
++  // No TLS in this build; pretend success.
++  if (key) {
++    memset(key, 0, sizeof(*key));
++  }
++  return 0;
 +}
 +
 +void uv_key_delete(uv_key_t* key) {
@@ -1884,11 +2279,20 @@ index 0000000..960f575
 +}
 +
 +int uv_gettimeofday(uv_timeval64_t* tv) {
-+  UV__UNUSED(tv);
-+  return UV_ENOSYS;
++  if (!tv) {
++    return UV_EINVAL;
++  }
++  struct timespec ts;
++  if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
++    return -errno;
++  }
++  tv->tv_sec = ts.tv_sec;
++  tv->tv_usec = ts.tv_nsec / 1000;
++  return 0;
 +}
 +
 +int uv_thread_create(uv_thread_t* tid, uv_thread_cb entry, void* arg) {
++  // Threads unsupported in this WASI build.
 +  UV__UNUSED(tid);
 +  UV__UNUSED(entry);
 +  UV__UNUSED(arg);

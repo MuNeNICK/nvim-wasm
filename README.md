@@ -16,7 +16,7 @@ This repository is a build wrapper that produces a WebAssembly (WASI) binary of 
 - No system-level installations are required; everything is fetched into `.toolchains/`.
 
 ## Build
-1) Fetch toolchains and build bundled dependencies (luv/libuv/lua/treesitter/etc.):
+1) Fetch toolchains and build bundled dependencies (luv/treesitter/etc.). libuv and PUC Lua are built first as standalone wasm static libs, then the remaining deps reuse them:
 ```sh
 make wasm-deps
 ```
@@ -36,3 +36,10 @@ make wasm-clean
 - Submodule contents must remain untouched; any WASI adjustments belong under `patches/` and are injected via `cmake/wasm-overrides.cmake`.
 - `Makefile` pins CMake and wasi-sdk versions, and passes all dependency paths explicitly to avoid Neovim-side edits.
 - The produced wasm binary relies on stubbed POSIX features (pty/signal/socket emulation). It is intended for embedding in a WASI runtime, not for feature parity with native Neovim.
+- `make wasm-libs` only rebuilds the external libuv/Lua artifacts if you need to refresh them without rebuilding the rest of the deps tree.
+
+## Browser demo
+- Build wasm: `make wasm`
+- Prepare assets: `./examples/browser/prepare.sh`
+- Serve with COOP/COEP so SharedArrayBuffer works: `python examples/browser/serve.py`
+- Open http://localhost:8000 to load the msgpack-RPC UI demo (click the canvas, then type). UI is minimal (linegrid only).

@@ -1,21 +1,25 @@
 --- src/constants.c	2024-01-01
 +++ src/constants.c	2024-01-02
 @@
--#include "luv.h"
-+#include "luv.h"
-+#include <netdb.h>
-+
+ #include "luv.h"
++#if defined(__wasi__)
 +#define LUV_WASI 1
-+
++struct protoent {
++  const char* p_name;
++  char** p_aliases;
++  int p_proto;
++};
 +static struct protoent* getprotobyname(const char* name) {
 +  (void)name;
 +  return NULL;
 +}
-+
 +static struct protoent* getprotobynumber(int num) {
 +  (void)num;
 +  return NULL;
 +}
++#else
++#include <netdb.h>
++#endif
 @@
    lua_pop(L, 1);
    proto = getprotobyname(string);
@@ -66,7 +70,7 @@
 +  return luv_error(L, UV_ENOSYS);
  }
 @@
- static int luv_setgid(lua_State* L){
+static int luv_setgid(lua_State* L){
 -  int gid = luaL_checkinteger(L, 1);
 -  int r = setgid(gid);
 -  if (-1 == r) {
@@ -75,3 +79,104 @@
 -  return 0;
 +  return luv_error(L, UV_ENOSYS);
  }
+
+--- src/work.c	2024-01-01
++++ src/work.c	2024-01-02
+@@
+ static uv_once_t once_vmkey = UV_ONCE_INIT;
+ static uv_key_t tls_vmkey;  /* thread local storage key for Lua state */
++static int luv_threadpool_ok = 1;
+@@
+ static void luv_key_init_once(void)
+ {
+   int status = uv_key_create(&tls_vmkey);
+   if (status != 0)
+   {
+-    fprintf(stderr, "*** threadpool not works\n");
+-    fprintf(stderr, "Error to uv_key_create with %s: %s\n",
+-      uv_err_name(status), uv_strerror(status));
+-    abort();
++    luv_threadpool_ok = 0;
+   }
+ }
+@@
+ static lua_State* luv_work_acquire_vm(luv_work_vms_t* vms)
+ {
++  if (!luv_threadpool_ok || vms->nvms == 0)
++    return NULL;
+   lua_State* L = uv_key_get(&tls_vmkey);
+   if (L == NULL)
+   {
+     L = acquire_vm_cb();
+     uv_key_set(&tls_vmkey, L);
+@@
+ static int luv_work_cleanup(lua_State *L)
+ {
+   unsigned int i;
+   luv_work_vms_t *vms = (luv_work_vms_t*)lua_touserdata(L, 1);
+   
+-  if (!vms || vms->nvms == 0)
++  if (!vms || vms->nvms == 0)
+     return 0;
+@@
+ static void luv_work_cb_wrapper(uv_work_t* req) {
+   luv_work_t* work =  (luv_work_t*)req->data;
+   lua_State *L = luv_work_acquire_vm(work->ctx->vms);
+   luv_ctx_t* lctx = luv_context(L);
++  if (L == NULL) {
++    fprintf(stderr, "*** threadpool disabled\n");
++    return;
++  }
+@@
+ static int luv_queue_work(lua_State* L) {
+   int top = lua_gettop(L);
+   luv_work_ctx_t* ctx = luv_check_work_ctx(L, 1);
+   luv_work_t* work = (luv_work_t*)malloc(sizeof(*work));
+   int ret;
++  if (!luv_threadpool_ok || ctx->vms->nvms == 0) {
++    free(work);
++    return luv_error(L, UV_ENOSYS);
++  }
+@@
+   const char* val;
+   unsigned int nvms = 4;
+@@
+   val = getenv("UV_THREADPOOL_SIZE");
+   if (val != NULL)
+     nvms = atoi(val);
+   if (nvms == 0)
+     nvms = 1;
+   if (nvms > MAX_THREADPOOL_SIZE)
+     nvms = MAX_THREADPOOL_SIZE;
+@@
+   luv_work_vms_t* vms = (luv_work_vms_t*)lua_newuserdata(L, sizeof(luv_work_vms_t));
+   int status = uv_mutex_init(&vms->vm_mutex);
+   if (status != 0)
+   {
+-    fprintf(stderr, "*** threadpool not works\n");
+-    fprintf(stderr, "Error to uv_mutex_init with %s: %s\n",
+-      uv_err_name(status), uv_strerror(status));
+-    abort();
++    luv_threadpool_ok = 0;
++    vms->nvms = 0;
++    vms->vms = NULL;
++    vms->idx_vms = 0;
++    luaL_getmetatable(L, "luv_work_vms");
++    lua_setmetatable(L, -2);
++    lua_rawsetp(L, LUA_REGISTRYINDEX, &luv_work_cleanup);
++    return;
+   }
+
+--- src/luv.c	2024-01-01
++++ src/luv.c	2024-01-02
+@@
+  *  limitations under the License.
+  *
+  */
++#define _WASI_EMULATED_SIGNAL 1
+ 
+ #include <lua.h>
+ #if (LUA_VERSION_NUM < 503)
+ #include "compat-5.3.h"
+ #endif
+ #include "luv.h"
