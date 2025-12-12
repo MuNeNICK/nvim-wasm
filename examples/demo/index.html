@@ -12,6 +12,7 @@
       .status { font-weight: 600; }
       .grid { min-height: 480px; border: 1px solid #2a3346; border-radius: 10px; padding: 10px; background: #050912; color: #dfe5f1; font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 14px; line-height: 1.35; white-space: pre; overflow: auto; outline: none; }
       .grid:focus { border-color: #5ad1ff; }
+      .cursor { background: transparent; color: inherit; }
       .hint { color: #9aa4b5; font-size: 12px; margin: 0; }
     </style>
   </head>
@@ -88,7 +89,7 @@
       function stopSession() { if (worker) { worker.terminate(); worker = null; } }
 
       function primeRpc() {
-        sendRpc("nvim_ui_attach", [cols, rows, { rgb: true, ext_linegrid: true, ext_hlstate: false }]);
+        sendRpc("nvim_ui_attach", [cols, rows, { rgb: true, ext_linegrid: true, ext_hlstate: true }]);
         sendRpc("nvim_ui_try_resize", [cols, rows]);
         sendRpc("nvim_command", ["set noswapfile"]);
         sendRpc("nvim_command", ["set number"]);
@@ -129,16 +130,87 @@
       function handleWorkerMessage(event) {
         const { type } = event.data || {};
         if (type === "draw-text") {
-          renderGrid(event.data.lines, event.data.mode);
+          const cells = event.data.cells && event.data.cells.length ? event.data.cells : linesToCells(event.data.lines);
+          renderGrid(cells, event.data.cursor, event.data.cursorHlId, event.data.mode, event.data.hls);
         } else if (type === "exit") {
           setStatus(`nvim exited (${event.data.code})`, event.data.code !== 0);
         }
       }
 
-      function renderGrid(lines = [], mode = "-") {
-        const text = (lines && lines.length ? lines : [""]).join("\n");
-        gridEl.textContent = text;
+      function renderGrid(cells = [], cursor = null, cursorHlId = 0, mode = "-", hls = {}) {
+        const rows = Array.isArray(cells) && cells.length ? cells : [];
+        const cur = cursor || { row: 0, col: 0 };
+        const row = Math.max(0, Math.min(cur.row || 0, rows.length ? rows.length - 1 : 0));
+        const col = Math.max(0, cur.col || 0);
+        const hlMap = hls || {};
+
+        let html = "";
+        for (let r = 0; r < rows.length; r += 1) {
+          const rowCells = Array.isArray(rows[r]) ? rows[r] : [];
+          const lineLen = rowCells.length;
+          for (let c = 0; c < lineLen; c += 1) {
+            const cell = rowCells[c] || {};
+            const ch = escapeChar(cell.ch || " ");
+            const attr = r === row && c === col
+              ? getHl(hlMap, cursorHlId, true)
+              : getHl(hlMap, cell.hl, false);
+            const style = styleFromHl(attr);
+            if (r === row && c === col) {
+              html += style ? `<span class="cursor" style="${style}">${ch}</span>` : `<span class="cursor">${ch}</span>`;
+            } else if (style) {
+              html += `<span style="${style}">${ch}</span>`;
+            } else {
+              html += ch;
+            }
+          }
+          if (r === row && col >= lineLen) {
+            html += " ".repeat(col - lineLen);
+            const attr = getHl(hlMap, cursorHlId, true);
+            const style = styleFromHl(attr);
+            html += style ? `<span class="cursor" style="${style}"> </span>` : `<span class="cursor"> </span>`;
+          }
+          if (r < rows.length - 1) html += "\n";
+        }
+
+        gridEl.innerHTML = html || " ";
         modeEl.textContent = `mode: ${mode || "-"}`;
+      }
+
+      function styleFromHl(attr) {
+        if (!attr) return "";
+        let fg = attr.foreground;
+        let bg = attr.background;
+        if (attr.reverse) {
+          fg = attr.background;
+          bg = attr.foreground;
+        }
+        const parts = [];
+        if (fg) parts.push(`color:${fg}`);
+        if (bg) parts.push(`background:${bg}`);
+        return parts.join(";");
+      }
+
+      function getHl(map, id, isCursor) {
+        const key = id != null && map[id] !== undefined ? id : String(id);
+        const hl = (key != null && map[key] !== undefined ? map[key] : null) || map[0] || map["0"] || null;
+        if (!hl) return null;
+        const reverse = Boolean(hl.reverse) || (isCursor && Number(id) === 0);
+        return { foreground: hl.foreground, background: hl.background, reverse };
+      }
+
+      function escapeChar(ch) {
+        switch (ch) {
+          case "&": return "&amp;";
+          case "<": return "&lt;";
+          case ">": return "&gt;";
+          case '"': return "&quot;";
+          default: return ch || " ";
+        }
+      }
+
+      function linesToCells(lines = []) {
+        const data = lines && lines.length ? lines : [""];
+        return data.map((line) => Array.from(line || "").map((ch) => ({ ch, hl: 0 })));
       }
 
       function setStatus(text, error = false) { statusEl.textContent = text; statusEl.style.color = error ? "#ff9ea2" : "#e8edf5"; }

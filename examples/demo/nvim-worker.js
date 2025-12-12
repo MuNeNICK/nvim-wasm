@@ -179,52 +179,77 @@ function handleRedraw(events) {
     switch (name) {
       case "grid_resize": {
         const value = Array.isArray(args[0]) ? args[0] : args;
-        uiState.resize(Number(value[1]), Number(value[2]));
+        uiState.resize(value[0], value[1], value[2]);
         dirty = true;
         break;
       }
-      case "grid_clear":
-        uiState.clear();
+      case "grid_clear": {
+        const value = Array.isArray(args[0]) ? args[0] : args;
+        uiState.clear(value[0]);
         dirty = true;
         break;
+      }
+      case "grid_destroy": {
+        const value = Array.isArray(args[0]) ? args[0] : args;
+        uiState.destroy(value[0]);
+        dirty = true;
+        break;
+      }
       case "grid_line": {
-        let entries;
+        let entries = [];
         if (args.length === 1 && Array.isArray(args[0]) && Array.isArray(args[0][0])) {
           entries = args[0];
-        } else if (Array.isArray(args[0]) && typeof args[0][0] === "number") {
-          entries = args;
         } else {
-          entries = [args];
+          for (const entry of args) {
+            if (Array.isArray(entry)) entries.push(entry);
+          }
         }
+        if (!entries.length && Array.isArray(args[0])) entries.push(args[0]);
         for (const entry of entries) {
-          const [, row, col, cells] = entry;
-          uiState.line(row, col, cells || []);
+          const [grid, row, col, cells] = entry;
+          uiState.line(grid, row, col, cells || []);
         }
         dirty = true;
         break;
       }
       case "grid_scroll": {
         const value = Array.isArray(args[0]) ? args[0] : args;
-        uiState.scroll(value[1], value[2], value[3], value[4], value[5], value[6]);
+        uiState.scroll(value[0], value[1], value[2], value[3], value[4], value[5], value[6]);
         dirty = true;
         break;
       }
       case "grid_cursor_goto": {
         const value = Array.isArray(args[0]) ? args[0] : args;
-        uiState.setCursor(value[1], value[2]);
+        uiState.setCursor(value[0], value[1], value[2]);
         dirty = true;
         break;
       }
       case "cursor_goto": {
         const value = Array.isArray(args[0]) ? args[0] : args;
-        uiState.setCursor(value[0], value[1]);
+        uiState.setCursor(uiState.activeGrid, value[0], value[1]);
         dirty = true;
         break;
       }
-      case "mode_change":
-        uiState.setMode(Array.isArray(args[0]) ? args[0][0] : args[0]);
+      case "mode_info_set": {
+        const value = Array.isArray(args[0]) ? args[0] : args;
+        uiState.setModeInfo(value[0], value[1]);
         dirty = true;
         break;
+      }
+      case "hl_attr_define": {
+        for (const entry of args) {
+          if (!Array.isArray(entry)) continue;
+          const [id, rgbAttr] = entry;
+          uiState.defineHl(id, rgbAttr || {});
+        }
+        break;
+      }
+      case "mode_change": {
+        const value = Array.isArray(args[0]) ? args[0] : args;
+        uiState.setMode(value[0], value[1]);
+        dirty = true;
+        break;
+      }
       case "flush":
         sendDraw();
         dirty = false;
@@ -240,47 +265,81 @@ function handleRedraw(events) {
 function sendDraw() {
   if (!uiState) return;
   const snapshot = uiState.snapshot();
-  postMessage({ type: "draw-text", lines: snapshot.lines, cursor: snapshot.cursor, mode: snapshot.mode });
+  postMessage({
+    type: "draw-text",
+    lines: snapshot.lines,
+    cells: snapshot.cells,
+    cursor: snapshot.cursor,
+    mode: snapshot.mode,
+    hls: snapshot.hls,
+  });
 }
 
 class UiState {
   constructor(cols, rows) {
-    this.grid = { width: cols, height: rows, cells: Array.from({ length: rows }, () => Array(cols).fill(" ")) };
-    this.cursor = { row: 0, col: 0 };
+    this.defaultWidth = Math.max(1, Number(cols) || 0);
+    this.defaultHeight = Math.max(1, Number(rows) || 0);
+    this.defaultGrid = 1;
+    this.activeGrid = this.defaultGrid;
+    this.grids = new Map();
+    this.grids.set(this.defaultGrid, this.#createGrid(this.defaultWidth, this.defaultHeight));
+    this.cursor = { grid: this.defaultGrid, row: 0, col: 0 };
     this.mode = "-";
+    this.modeIdx = 0;
+    this.cursorStyleEnabled = false;
+    this.modeInfo = [];
+    this.cursorHlId = 0;
+    this.hls = new Map();
+    this.hls.set(0, { foreground: null, background: null, reverse: false, blend: 0 });
   }
 
-  resize(width, height) {
+  resize(gridId, width, height) {
+    const grid = this.#ensureGrid(gridId);
     const w = Math.max(1, Number(width) || 0);
     const h = Math.max(1, Number(height) || 0);
-    this.grid.width = w;
-    this.grid.height = h;
-    this.grid.cells = Array.from({ length: h }, () => Array(w).fill(" "));
+    grid.width = w;
+    grid.height = h;
+    grid.cells = Array.from({ length: h }, () => this.#blankRow(w));
   }
 
-  clear() {
-    this.grid.cells = Array.from({ length: this.grid.height }, () => Array(this.grid.width).fill(" "));
+  clear(gridId) {
+    const grid = this.#ensureGrid(gridId);
+    grid.cells = Array.from({ length: grid.height }, () => this.#blankRow(grid.width));
   }
 
-  line(row, colStart, cells) {
+  destroy(gridId) {
+    const id = Number(gridId);
+    this.grids.delete(id);
+    if (this.activeGrid === id) this.activeGrid = this.defaultGrid;
+  }
+
+  line(gridId, row, colStart, cells) {
+    const grid = this.#ensureGrid(gridId);
     const rowIdx = Number(row) || 0;
     const col0 = Number(colStart) || 0;
-    const rowCells = this.grid.cells[rowIdx] || (this.grid.cells[rowIdx] = Array(this.grid.width).fill(" "));
+    if (rowIdx < 0 || rowIdx >= grid.height) return;
+    const rowCells = grid.cells[rowIdx] || (grid.cells[rowIdx] = this.#blankRow(grid.width));
     let col = col0;
+    let currentHl = 0;
     for (const cell of cells) {
-      const [text, _hlId, rep] = cell;
-      const repeat = rep || 1;
+      const text = cell[0];
+      const hlId = cell.length > 1 && cell[1] !== undefined ? cell[1] : currentHl;
+      currentHl = hlId;
+      const repeat = cell[2] || 1;
       const glyph = normalizeGlyph(text);
-      for (let r = 0; r < repeat && col < this.grid.width; r += 1) {
-        for (const ch of glyph) {
-          if (col >= this.grid.width) break;
-          rowCells[col++] = ch || " ";
+      const glyphChars = glyph === "" ? [""] : Array.from(glyph);
+      for (let r = 0; r < repeat && col < grid.width; r += 1) {
+        for (const ch of glyphChars) {
+          if (col >= grid.width) break;
+          rowCells[col] = this.#makeCell(ch ?? " ", hlId);
+          col += 1;
         }
       }
     }
   }
 
-  scroll(top, bot, left, right, rows, cols) {
+  scroll(gridId, top, bot, left, right, rows, cols) {
+    const grid = this.#ensureGrid(gridId);
     const t = Number(top) || 0;
     const b = Number(bot) || 0;
     const l = Number(left) || 0;
@@ -289,51 +348,131 @@ class UiState {
     const colDelta = Number(cols) || 0;
     const height = b - t;
     const width = r - l;
-    const emptyRow = Array(width).fill(" ");
+    const emptyRow = this.#blankRow(width);
     const slice = [];
+    for (let i = t; i < b; i += 1) {
+      if (!grid.cells[i]) grid.cells[i] = this.#blankRow(grid.width);
+    }
     for (let i = 0; i < height; i += 1) {
-      const row = this.grid.cells[t + i] || [];
+      const row = grid.cells[t + i] || this.#blankRow(grid.width);
       slice.push(row.slice(l, r));
     }
 
     if (rowDelta > 0) {
       for (let i = 0; i < height - rowDelta; i += 1) {
-        this.grid.cells[t + i].splice(l, width, ...slice[i + rowDelta]);
+        grid.cells[t + i].splice(l, width, ...slice[i + rowDelta]);
       }
       for (let i = height - rowDelta; i < height; i += 1) {
-        this.grid.cells[t + i].splice(l, width, ...emptyRow);
+        grid.cells[t + i].splice(l, width, ...emptyRow);
       }
     } else if (rowDelta < 0) {
       for (let i = height - 1; i >= -rowDelta; i -= 1) {
-        this.grid.cells[t + i].splice(l, width, ...slice[i + rowDelta]);
+        grid.cells[t + i].splice(l, width, ...slice[i + rowDelta]);
       }
       for (let i = 0; i < -rowDelta; i += 1) {
-        this.grid.cells[t + i].splice(l, width, ...emptyRow);
+        grid.cells[t + i].splice(l, width, ...emptyRow);
       }
     }
 
     if (colDelta !== 0) {
       for (let i = t; i < b; i += 1) {
         for (let j = l; j < r; j += 1) {
-          this.grid.cells[i][j] = " ";
+          grid.cells[i][j] = this.#makeCell(" ", 0);
         }
       }
     }
   }
 
-  setCursor(row, col) {
-    this.cursor = { row: Number(row) || 0, col: Number(col) || 0 };
+  setCursor(gridId, row, col) {
+    const gid = Number.isFinite(Number(gridId)) ? Number(gridId) : this.defaultGrid;
+    this.activeGrid = gid;
+    this.#ensureGrid(gid);
+    this.cursor = { grid: gid, row: Number(row) || 0, col: Number(col) || 0 };
   }
 
-  setMode(mode) { this.mode = mode || "-"; }
+  setMode(mode, modeIdx) {
+    this.mode = mode || "-";
+    if (Number.isInteger(modeIdx)) this.modeIdx = modeIdx;
+    this.#updateCursorHl();
+  }
+
+  setModeInfo(cursorStyleEnabled, modeInfo) {
+    this.cursorStyleEnabled = Boolean(cursorStyleEnabled);
+    this.modeInfo = Array.isArray(modeInfo) ? modeInfo : [];
+    this.#updateCursorHl();
+  }
+
+  defineHl(id, rgbAttr = {}) {
+    const hlId = Number(id);
+    this.hls.set(hlId, {
+      foreground: toHex(rgbAttr.foreground),
+      background: toHex(rgbAttr.background),
+      reverse: Boolean(rgbAttr.reverse),
+      blend: Number(rgbAttr.blend) || 0,
+    });
+  }
 
   snapshot() {
+    const grid = this.grids.get(this.activeGrid) || this.grids.get(this.defaultGrid) || this.grids.values().next().value;
+    if (!grid) {
+      return {
+        lines: [""],
+        cells: [[{ ch: " ", hl: 0 }]],
+        cursor: { grid: this.defaultGrid, row: 0, col: 0 },
+        mode: this.mode,
+        cursorHlId: this.cursorHlId,
+        hls: Object.fromEntries(this.hls),
+      };
+    }
+
+    const row = clamp(Math.floor(this.cursor.row || 0), 0, grid.height - 1);
+    const col = clamp(Math.floor(this.cursor.col || 0), 0, grid.width - 1);
+    const cells = grid.cells.map((r) => r.map((cell) => ({ ch: cell?.ch ?? " ", hl: cell?.hl ?? 0 })));
     return {
-      lines: this.grid.cells.map((row) => row.join("")),
-      cursor: this.cursor,
+      lines: cells.map((r) => r.map((c) => c.ch || " ").join("")),
+      cells,
+      cursor: { grid: this.cursor.grid, row, col },
       mode: this.mode,
+      cursorHlId: this.cursorHlId,
+      hls: Object.fromEntries(this.hls),
     };
   }
+
+  #ensureGrid(gridId) {
+    const gid = Number.isFinite(Number(gridId)) ? Number(gridId) : this.defaultGrid;
+    if (!this.grids.has(gid)) this.grids.set(gid, this.#createGrid(this.defaultWidth, this.defaultHeight));
+    return this.grids.get(gid);
+  }
+
+  #createGrid(width, height) {
+    const w = Math.max(1, Number(width) || 0);
+    const h = Math.max(1, Number(height) || 0);
+    return { width: w, height: h, cells: Array.from({ length: h }, () => this.#blankRow(w)) };
+  }
+
+  #blankRow(width, hl = 0) { return Array.from({ length: width }, () => this.#makeCell(" ", hl)); }
+
+  #makeCell(ch, hl) { return { ch, hl: Number.isFinite(Number(hl)) ? Number(hl) : 0 }; }
+
+  #updateCursorHl() {
+    if (!this.cursorStyleEnabled || !Array.isArray(this.modeInfo)) {
+      this.cursorHlId = 0;
+      return;
+    }
+    const info = this.modeInfo[this.modeIdx] || null;
+    const attrId = info && info.attr_id !== undefined ? info.attr_id : 0;
+    this.cursorHlId = Number.isFinite(Number(attrId)) ? Number(attrId) : 0;
+  }
+}
+
+function clamp(value, min, max) { return Math.min(Math.max(value, min), max); }
+
+function toHex(value) {
+  if (value === undefined || value === null || Number.isNaN(Number(value))) return null;
+  const numVal = Number(value);
+  if (numVal < 0) return null;
+  const num = numVal >>> 0;
+  return `#${num.toString(16).padStart(6, "0").slice(-6)}`;
 }
 
 function normalizeGlyph(val) {
