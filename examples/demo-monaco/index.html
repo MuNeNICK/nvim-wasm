@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Neovim + Monaco (WASM)</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/editor/editor.main.css" />
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #0f131a;
+        color: #e6ecf5;
+      }
+      .app { max-width: 1100px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+      header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .title { font-size: 18px; font-weight: 700; }
+      .status-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 10px; border: 1px solid #3a4457; border-radius: 6px; background: #111722; }
+      .pill { padding: 2px 6px; border-radius: 4px; border: 1px solid #3a4457; font-size: 12px; }
+      .pill.ok { border-color: #4cc3b8; color: #4cc3b8; }
+      .pill.warn { border-color: #ff9ea2; color: #ff9ea2; }
+      .editor-shell { position: relative; min-height: 520px; border: 1px solid #3a4457; border-radius: 6px; background: #0d1320; overflow: hidden; }
+      #editor { position: absolute; inset: 0; }
+      .hint { color: #9aa5bb; font-size: 13px; margin: 0; }
+      .log { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; color: #9aa5bb; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <div class="title">Neovim + Monaco (headless WASM)</div>
+      </header>
+
+      <div class="status-line">
+        <span id="status" class="pill warn">waiting</span>
+        <span id="mode" class="pill">mode: -</span>
+        <span id="cursor" class="pill">cursor: -</span>
+        <span id="buffer" class="pill">buf: -</span>
+        <span class="hint">Serve with COOP/COEP so SharedArrayBuffer works.</span>
+      </div>
+
+      <div class="editor-shell">
+        <div id="editor" aria-label="Monaco editor backed by Neovim"></div>
+      </div>
+
+      <p class="hint">
+        Drop `nvim.wasm` and `nvim-runtime.tar.gz` into this folder (copied from `examples/demo` or built outputs).
+        Keys go to Neovim; Monaco renders buffer + cursor via buffer events, similar to vscode-neovim.
+      </p>
+      <div class="log" id="log"></div>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
