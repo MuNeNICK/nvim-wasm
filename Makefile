@@ -41,6 +41,11 @@ WASM_LUA_LDFLAGS = $(shell python3 $(PWD)/scripts/config/wasm_flags.py --field l
 WASM_DEPS_BUILD := $(PWD)/build-wasm-deps
 WASM_DEPS_DOWNLOAD := $(TOOLCHAIN_DIR)/.deps-download-wasm
 WASM_BUILD := $(PWD)/build-wasm
+HOST_BUILD_DIR := $(PWD)/build-host
+HOST_PREFIX := $(HOST_BUILD_DIR)/.deps/usr
+HOST_LUA_PRG_DEFAULT := $(HOST_PREFIX)/bin/lua
+HOST_LUAC_DEFAULT := $(HOST_PREFIX)/bin/luac
+HOST_NLUA0_DEFAULT := $(HOST_BUILD_DIR)/libnlua0-host.so
 LIBUV_PATCHED_TAR := $(TOOLCHAIN_DIR)/libuv-wasi.tar.gz
 LIBUV_ORIG_TAR := $(TOOLCHAIN_DIR)/libuv-1.51.0.tar.gz
 LIBUV_ORIG_URL := https://github.com/libuv/libuv/archive/v1.51.0.tar.gz
@@ -64,11 +69,44 @@ LUA_ORIG_TAR := $(TOOLCHAIN_DIR)/$(LUA_TAR)
 LUA_ORIG_URL ?= https://www.lua.org/ftp/$(LUA_TAR)
 LUA_SRC_DIR := $(WASM_DEPS_BUILD)/src/lua
 
-.PHONY: wasm wasm-configure wasm-deps wasm-toolchain wasm-build-tools wasm-clean libuv-patched wasm-libs libuv-wasm lua-wasm luv-wasm
+.PHONY: wasm wasm-configure wasm-deps wasm-toolchain wasm-build-tools wasm-clean libuv-patched wasm-libs libuv-wasm lua-wasm luv-wasm host-lua host-lua-configure
 
-HOST_LUA_PRG ?= $(PWD)/build-host/lua-src/src/lua
-HOST_LUAC ?= $(PWD)/build-host/lua-src/src/luac
+HOST_LUA_PRG ?= $(HOST_LUA_PRG_DEFAULT)
+HOST_LUAC ?= $(HOST_LUAC_DEFAULT)
+HOST_NLUA0 ?= $(HOST_NLUA0_DEFAULT)
 HOST_LUA_GEN_WRAPPER ?= $(PWD)/scripts/build/host_lua_gen.py
+
+ifeq ($(HOST_LUA_PRG),$(HOST_LUA_PRG_DEFAULT))
+NEED_BUILD_HOST_LUA := 1
+endif
+
+host-lua: host-lua-configure
+	@if [ -x "$(HOST_LUA_PRG)" ] && [ -f "$(HOST_NLUA0)" ]; then \
+	  echo "host-lua: reusing existing host lua at $(HOST_LUA_PRG)"; \
+	  exit 0; \
+	fi
+	$(CMAKE) --build $(HOST_BUILD_DIR) --target nlua0 -- -j$(CMAKE_BUILD_JOBS)
+	@if [ -f "$(HOST_BUILD_DIR)/libnlua0.so" ]; then \
+	  cp "$(HOST_BUILD_DIR)/libnlua0.so" "$(HOST_NLUA0_DEFAULT)"; \
+	elif [ -f "$(HOST_BUILD_DIR)/libnlua0.dylib" ]; then \
+	  cp "$(HOST_BUILD_DIR)/libnlua0.dylib" "$(HOST_NLUA0_DEFAULT)"; \
+	elif [ -f "$(HOST_BUILD_DIR)/nlua0.dll" ]; then \
+	  cp "$(HOST_BUILD_DIR)/nlua0.dll" "$(HOST_NLUA0_DEFAULT)"; \
+	fi
+
+host-lua-configure: wasm-build-tools
+	$(CMAKE) -S $(NEOVIM_DIR) -B $(HOST_BUILD_DIR) -G $(CMAKE_GENERATOR) \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DUSE_BUNDLED=ON \
+		-DPREFER_LUA=ON -DUSE_BUNDLED_LUA=ON -DUSE_BUNDLED_LUAJIT=OFF \
+		-DUSE_BUNDLED_LUV=ON -DUSE_BUNDLED_LIBUV=ON \
+		-DUSE_BUNDLED_MSGPACK=ON -DUSE_BUNDLED_LIBTERMKEY=ON \
+		-DUSE_BUNDLED_LIBVTERM=ON -DUSE_BUNDLED_TS=ON -DUSE_BUNDLED_TREESITTER=ON \
+		-DUSE_BUNDLED_UNIBILIUM=ON -DENABLE_WASMTIME=OFF -DENABLE_LTO=OFF
+
+ifdef NEED_BUILD_HOST_LUA
+wasm-configure: host-lua
+endif
 
 wasm: wasm-configure
 	$(CMAKE) --build $(WASM_BUILD) --target nvim_bin -- -j$(CMAKE_BUILD_JOBS)

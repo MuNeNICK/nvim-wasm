@@ -17,8 +17,23 @@ from pathlib import Path
 
 def _resolve_paths() -> tuple[Path, Path]:
     repo_root = Path(__file__).resolve().parents[2]
-    host_lua = Path(os.environ.get("HOST_LUA_PRG", repo_root / "build-host/lua-src/src/lua"))
-    host_nlua = Path(os.environ.get("HOST_NLUA0", repo_root / "build-host/libnlua0-host.so"))
+    if "HOST_LUA_PRG" in os.environ:
+        host_lua = Path(os.environ["HOST_LUA_PRG"])
+    else:
+        host_lua_candidates = [
+            repo_root / "build-host/.deps/usr/bin/lua",
+            repo_root / "build-host/lua-src/src/lua",
+        ]
+        host_lua = next((p for p in host_lua_candidates if p.exists()), host_lua_candidates[0])
+
+    if "HOST_NLUA0" in os.environ:
+        host_nlua = Path(os.environ["HOST_NLUA0"])
+    else:
+        host_nlua_candidates = [
+            repo_root / "build-host/libnlua0-host.so",
+            repo_root / "build-host/libnlua0.so",
+        ]
+        host_nlua = next((p for p in host_nlua_candidates if p.exists()), host_nlua_candidates[0])
     return host_lua, host_nlua
 
 

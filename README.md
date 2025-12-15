@@ -24,18 +24,24 @@ https://github.com/user-attachments/assets/524ccf71-1cc4-4b65-aea1-e3f6c893263e
 - No system-level installations are required; everything is fetched into `.toolchains/`.
 
 ## Build
-1) Fetch toolchains and build bundled dependencies (luv/treesitter/etc.). libuv and PUC Lua are built first as standalone wasm static libs, then the remaining deps reuse them:
+1) Build host Lua + nlua0 used during codegen (skipped if you point `HOST_LUA_PRG`/`HOST_NLUA0` elsewhere):
+```sh
+make host-lua
+```
+Artifacts land in `build-host/.deps/usr/bin/lua` and `build-host/libnlua0-host.so`; `make wasm` will automatically build them when using the defaults.
+
+2) Fetch toolchains and build bundled dependencies (luv/treesitter/etc.). libuv and PUC Lua are built first as standalone wasm static libs, then the remaining deps reuse them:
 ```sh
 make wasm-deps
 ```
 
-2) Configure and build Neovim for wasm32-wasi:
+3) Configure and build Neovim for wasm32-wasi:
 ```sh
 make wasm
 ```
 This emits `build-wasm/bin/nvim`, which is a WASI module (not runnable directly on the host). Runtime helptags are intentionally skipped because the wasm binary cannot execute during the build.
 
-3) Clean build artifacts if needed:
+4) Clean build artifacts if needed:
 ```sh
 make wasm-clean
 ```
