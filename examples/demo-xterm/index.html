@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Neovim + xterm.js (ghostty backend)</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #162031;
+        color: #e8edf5;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .app { max-width: 980px; min-height: 100vh; padding: 24px 16px 96px; margin: 0 auto; display: flex; flex-direction: column; justify-content: center; gap: 12px; }
+      .window {
+        border: 1px solid rgba(140, 170, 210, 0.18);
+        border-radius: 12px;
+        background: rgba(6, 8, 12, 0.65);
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+        overflow: hidden;
+      }
+      .titlebar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        background: #2d2d2d;
+        border-bottom: 1px solid rgba(140, 170, 210, 0.14);
+      }
+      .dots { display: inline-flex; gap: 8px; }
+      .dot { width: 10px; height: 10px; border-radius: 50%; opacity: 0.9; }
+      .dot.red { background: #ff5f57; }
+      .dot.yellow { background: #febc2e; }
+      .dot.green { background: #28c840; }
+      .title {
+        font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: rgba(232, 237, 245, 0.85);
+        letter-spacing: 0.2px;
+        user-select: none;
+      }
+      .meta {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+        font: 500 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: rgba(232, 237, 245, 0.7);
+        user-select: none;
+      }
+      #terminal {
+        height: 520px;
+        background: #000;
+        padding: 0;
+        overflow: hidden;
+        width: calc(100% + 15px);
+      }
+      #terminal canvas { display: block; }
+      #status {
+        font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: rgba(232, 237, 245, 0.8);
+      }
+      .hint { margin: 0; color: rgba(232, 237, 245, 0.55); font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="window">
+        <div class="titlebar">
+          <div class="dots" aria-hidden="true">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="title">Neovim (WASM) — xterm.js (ghostty)</div>
+          <div class="meta">
+            <span id="status">Loading...</span>
+            <span id="mode">mode: -</span>
+            <span id="size">size: -</span>
+          </div>
+        </div>
+
+        <div id="terminal" aria-label="xterm.js-compatible terminal rendering Neovim UI grid"></div>
+      </div>
+
+      <p class="hint">Serve with COOP/COEP so SharedArrayBuffer works.</p>
+    </div>
+
+    <script type="module" src="./main.js?v7"></script>
+  </body>
+</html>

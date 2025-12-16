@@ -54,8 +54,9 @@ make wasm-clean
 
 ## Browser demo
 - Build wasm: `make wasm`
-- Copy assets into `examples/demo/`:
-  - `cp build-wasm/bin/nvim examples/demo/nvim.wasm`
-  - `tar -czf examples/demo/nvim-runtime.tar.gz -C neovim/.. runtime -C build-wasm usr nvim_version.lua`
-- Serve `examples/demo/` with COOP/COEP headers (any static server is fine; ensure SharedArrayBuffer is enabled).
-- Open http://localhost:8765 (or your chosen port). Neovim starts automatically with a demo buffer ready to edit; click the grid to focus.
+- Pick a demo directory: `examples/demo/` (DOM grid), `examples/demo-monaco/`, or `examples/demo-xterm/`.
+- Copy assets into it:
+  - `cp build-wasm/bin/nvim examples/<demo>/nvim.wasm`
+  - `tar -czf examples/<demo>/nvim-runtime.tar.gz -C neovim/.. runtime -C build-wasm usr nvim_version.lua`
+- Serve that directory with COOP/COEP headers (any static server is fine; ensure SharedArrayBuffer is enabled).
+- Open http://localhost:8765 (or your chosen port). Neovim starts automatically; click the editor/terminal area to focus.
