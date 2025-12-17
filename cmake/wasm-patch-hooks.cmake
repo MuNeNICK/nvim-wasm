@@ -6,6 +6,11 @@ endif()
 
 include(ExternalProject)
 
+find_program(NVIM_WASM_LUA_PRG NAMES luajit lua5.1 lua)
+if(NOT NVIM_WASM_LUA_PRG)
+  message(FATAL_ERROR "Lua interpreter not found (need luajit or lua) for WASI patch scripts")
+endif()
+
 function(_nvim_wasm_forward_sysdeps)
   set(_prefix "${_nvim_wrap_root}/build-wasm-deps/usr")
   list(APPEND DEPS_CMAKE_ARGS
@@ -24,12 +29,12 @@ function(_nvim_wasm_patch_lua_dep)
   if(NOT TARGET lua)
     return()
   endif()
-  set(_script "${_nvim_wrap_root}/scripts/patch/lua_wasi.py")
+  set(_script "${_nvim_wrap_root}/scripts/patch/lua_wasi.lua")
   if(NOT EXISTS "${_script}")
     message(FATAL_ERROR "Lua WASI patch script not found: ${_script}")
   endif()
   ExternalProject_Add_Step(lua wasm_patch_lua
-    COMMAND python3 ${_script}
+    COMMAND ${NVIM_WASM_LUA_PRG} ${_script}
       --build-dir ${DEPS_BUILD_DIR}
       --install-dir ${DEPS_INSTALL_DIR}
       --cc ${CMAKE_C_COMPILER}
@@ -40,10 +45,10 @@ function(_nvim_wasm_patch_lua_dep)
     COMMENT "Patching Lua sources for WASI")
 
   if(TARGET luv)
-    set(_luv_script "${_nvim_wrap_root}/scripts/patch/luv_wasi.py")
+    set(_luv_script "${_nvim_wrap_root}/scripts/patch/luv_wasi.lua")
     if(EXISTS "${_luv_script}")
       ExternalProject_Add_Step(luv wasm_patch_luv
-        COMMAND python3 ${_luv_script}
+        COMMAND ${NVIM_WASM_LUA_PRG} ${_luv_script}
           --build-dir ${DEPS_BUILD_DIR}
         DEPENDEES download
         DEPENDERS configure

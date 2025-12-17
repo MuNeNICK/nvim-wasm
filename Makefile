@@ -5,6 +5,12 @@ NEOVIM_DIR ?= neovim
 TOOLCHAIN_DIR := $(PWD)/.toolchains
 PATCH_DIR := $(PWD)/patches
 
+# Lua interpreter for wrapper scripts (prefer Lua 5.1-compatible).
+LUA ?= $(shell (command -v luajit >/dev/null 2>&1 && echo luajit) || (command -v lua5.1 >/dev/null 2>&1 && echo lua5.1) || (command -v lua >/dev/null 2>&1 && echo lua) || true)
+ifeq ($(strip $(LUA)),)
+$(error "Lua interpreter not found (need luajit or lua)")
+endif
+
 # Common flags to enable wasm exception handling and unwind info so that
 # setjmp/longjmp do not escape as env imports.
 WASM_EH_FLAGS := -fwasm-exceptions -fexceptions -funwind-tables -mllvm -wasm-enable-sjlj
@@ -81,10 +87,10 @@ ifneq ($(ASYNCIFY_STRIP_PRODUCERS),0)
 ASYNCIFY_POST_OPTS += --strip-producers
 endif
 
-WASM_LINK_FLAGS = $(shell python3 $(PWD)/scripts/config/wasm_flags.py --field ldflags-common --sysroot $(WASI_SDK_ROOT)/share/wasi-sysroot --eh "$(WASM_EH_FLAGS)")
-WASM_CFLAGS_COMMON = $(shell python3 $(PWD)/scripts/config/wasm_flags.py --field cflags-common --patch-dir $(PATCH_DIR) --eh "$(WASM_EH_FLAGS)")
-WASM_LUA_CFLAGS = $(shell python3 $(PWD)/scripts/config/wasm_flags.py --field lua-cflags --patch-dir $(PATCH_DIR) --eh "$(WASM_EH_FLAGS)")
-WASM_LUA_LDFLAGS = $(shell python3 $(PWD)/scripts/config/wasm_flags.py --field lua-ldflags --sysroot $(WASI_SDK_ROOT)/share/wasi-sysroot --eh "$(WASM_EH_FLAGS)")
+WASM_LINK_FLAGS = $(shell $(LUA) $(PWD)/scripts/config/wasm_flags.lua --field ldflags-common --sysroot $(WASI_SDK_ROOT)/share/wasi-sysroot --eh "$(WASM_EH_FLAGS)")
+WASM_CFLAGS_COMMON = $(shell $(LUA) $(PWD)/scripts/config/wasm_flags.lua --field cflags-common --patch-dir $(PATCH_DIR) --eh "$(WASM_EH_FLAGS)")
+WASM_LUA_CFLAGS = $(shell $(LUA) $(PWD)/scripts/config/wasm_flags.lua --field lua-cflags --patch-dir $(PATCH_DIR) --eh "$(WASM_EH_FLAGS)")
+WASM_LUA_LDFLAGS = $(shell $(LUA) $(PWD)/scripts/config/wasm_flags.lua --field lua-ldflags --sysroot $(WASI_SDK_ROOT)/share/wasi-sysroot --eh "$(WASM_EH_FLAGS)")
 
 WASM_DEPS_BUILD := $(PWD)/build-wasm-deps
 WASM_DEPS_DOWNLOAD := $(TOOLCHAIN_DIR)/.deps-download-wasm
@@ -124,7 +130,7 @@ LUA_SRC_DIR := $(WASM_DEPS_BUILD)/src/lua
 HOST_LUA_PRG ?= $(HOST_LUA_PRG_DEFAULT)
 HOST_LUAC ?= $(HOST_LUAC_DEFAULT)
 HOST_NLUA0 ?= $(HOST_NLUA0_DEFAULT)
-HOST_LUA_GEN_WRAPPER ?= $(PWD)/scripts/build/host_lua_gen.py
+HOST_LUA_GEN_WRAPPER ?= $(PWD)/scripts/build/host_lua_gen.lua
 
 host-lua:
 	@if [ -x "$(HOST_LUA_PRG)" ] && [ -f "$(HOST_NLUA0)" ]; then \
@@ -201,7 +207,7 @@ wasm-configure: wasm-deps
 		-DLUA_INCLUDE_DIR=$(WASM_INCLUDE_DIR) \
 		-DLUA_PRG=$(HOST_LUA_PRG) \
 		-DLUA_EXECUTABLE=$(HOST_LUA_PRG) \
-		-DLUA_GEN_PRG=$(HOST_LUA_GEN_WRAPPER) \
+		-DLUA_GEN_PRG="$(LUA);$(HOST_LUA_GEN_WRAPPER)" \
 		-DLUAC_PRG= \
 		-DICONV_INCLUDE_DIR=$(PWD)/patches/wasi-shim/include \
 		-DICONV_LIBRARY=$(PWD)/patches/wasi-shim/lib/libiconv.a \
@@ -247,21 +253,21 @@ wasm-deps: wasm-toolchain wasm-build-tools wasm-libs
 	CMAKE_BUILD_PARALLEL_LEVEL=$(WASM_DEPS_JOBS) $(CMAKE) --build $(WASM_DEPS_BUILD) -- -j$(WASM_DEPS_JOBS)
 
 wasm-toolchain:
-	@python3 $(PWD)/scripts/toolchain/fetch.py \
+	@$(LUA) $(PWD)/scripts/toolchain/fetch.lua \
 	  --url "$(WASI_SDK_URL)" \
 	  --archive "$(TOOLCHAIN_DIR)/$(WASI_SDK_TAR)" \
 	  --dest "$(TOOLCHAIN_DIR)" \
 	  --expected "$(WASI_SDK_ROOT)"
 
 wasm-build-tools:
-	@python3 $(PWD)/scripts/toolchain/fetch.py \
+	@$(LUA) $(PWD)/scripts/toolchain/fetch.lua \
 	  --url "$(CMAKE_URL)" \
 	  --archive "$(TOOLCHAIN_DIR)/$(CMAKE_TAR)" \
 	  --dest "$(TOOLCHAIN_DIR)" \
 	  --expected "$(CMAKE_ROOT)"
 
 binaryen-toolchain:
-	@python3 $(PWD)/scripts/toolchain/fetch.py \
+	@$(LUA) $(PWD)/scripts/toolchain/fetch.lua \
 	  --url "$(BINARYEN_URL)" \
 	  --archive "$(TOOLCHAIN_DIR)/$(BINARYEN_TAR)" \
 	  --dest "$(TOOLCHAIN_DIR)" \
@@ -273,7 +279,7 @@ libuv-wasm: wasm-toolchain wasm-build-tools libuv-patched
 	@mkdir -p $(WASM_DEPS_BUILD)/src
 	@rm -rf $(LIBUV_SRC_DIR) $(LIBUV_BUILD_DIR)
 	tar -C $(WASM_DEPS_BUILD)/src -xf $(LIBUV_PATCHED_TAR)
-	@python3 $(PWD)/scripts/patch/libuv_wasi_tail.py $(LIBUV_SRC_DIR)
+	@$(LUA) $(PWD)/scripts/patch/libuv_wasi_tail.lua $(LIBUV_SRC_DIR)
 	$(CMAKE) -S $(LIBUV_SRC_DIR) -B $(LIBUV_BUILD_DIR) -G $(CMAKE_GENERATOR) \
 		-DCMAKE_PROJECT_INCLUDE=$(PWD)/cmake/wasm-overrides.cmake \
 		-DCMAKE_TOOLCHAIN_FILE=$(PWD)/cmake/toolchain-wasi.cmake \
@@ -297,7 +303,7 @@ lua-wasm: wasm-toolchain
 	@rm -rf $(LUA_SRC_DIR) $(WASM_DEPS_BUILD)/src/lua-$(LUA_VERSION)
 	tar -C $(WASM_DEPS_BUILD)/src -xf $(LUA_ORIG_TAR)
 	mv $(WASM_DEPS_BUILD)/src/lua-$(LUA_VERSION) $(LUA_SRC_DIR)
-	@python3 $(PWD)/scripts/patch/lua_wasi.py \
+	@$(LUA) $(PWD)/scripts/patch/lua_wasi.lua \
 	  --build-dir $(WASM_DEPS_BUILD) \
 	  --install-dir $(WASM_DEPS_PREFIX) \
 	  --cc "$(WASI_SDK_ROOT)/bin/clang --target=wasm32-wasi" \
@@ -332,7 +338,7 @@ luv-wasm: wasm-toolchain libuv-wasm lua-wasm
 	@rm -rf $(LUV_SRC_DIR) $(WASM_DEPS_BUILD)/src/luv-$(LUV_VERSION) $(LUV_BUILD_DIR)
 	tar -C $(WASM_DEPS_BUILD)/src -xf $(LUV_ORIG_TAR)
 	mv $(WASM_DEPS_BUILD)/src/luv-$(LUV_VERSION) $(LUV_SRC_DIR)
-	@python3 $(PWD)/scripts/patch/luv_wasi.py --build-dir $(WASM_DEPS_BUILD)
+	@$(LUA) $(PWD)/scripts/patch/luv_wasi.lua --build-dir $(WASM_DEPS_BUILD)
 	$(CMAKE) -S $(LUV_SRC_DIR) -B $(LUV_BUILD_DIR) -G $(CMAKE_GENERATOR) \
 		-DCMAKE_TOOLCHAIN_FILE=$(PWD)/cmake/toolchain-wasi.cmake \
 		-DWASI_SDK_ROOT=$(WASI_SDK_ROOT) \

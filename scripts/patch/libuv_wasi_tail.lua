@@ -1,19 +1,9 @@
-#!/usr/bin/env python3
-"""Fix up the WASI stub in libuv by restoring the missing UTF-16/WT-F8 helpers.
+#!/usr/bin/env lua
+-- Fix up the WASI stub in libuv by restoring the missing UTF-16/WT-F8 helpers.
+--
+-- Usage: libuv_wasi_tail.lua <libuv-source-dir>
 
-Some upstream archives we patch for WASI ship a truncated stub.c. This script
-rewrites the tail so the wasm build can proceed.
-"""
-
-from __future__ import annotations
-
-import argparse
-import re
-import sys
-from pathlib import Path
-
-
-EXTRA_BLOCK = r"""// Extra stubs injected for WASI build (single-threaded, no TLS).
+local EXTRA_BLOCK = [[// Extra stubs injected for WASI build (single-threaded, no TLS).
 void uv_once(uv_once_t* guard, void (*callback)(void)) {
   if (guard && *guard) {
     return;
@@ -135,27 +125,9 @@ void uv_loop_set_data(uv_loop_t* arg0, void* data) {
   UV__UNUSED(arg0);
   UV__UNUSED(data);
 }
-"""
+]]
 
-
-def _parse_args(argv: list[str]) -> Path:
-  parser = argparse.ArgumentParser(description="Patch libuv WASI stub tail")
-  parser.add_argument("src", nargs="?", help="libuv source dir (contains src/wasi/stub.c)")
-  args = parser.parse_args(argv[1:])
-  src = args.src or ""
-  if not src:
-    raise SystemExit("libuv source dir must be provided")
-  return Path(src)
-
-
-def main(argv: list[str]) -> int:
-  src_dir = _parse_args(argv)
-  stub = src_dir / "src" / "wasi" / "stub.c"
-  if not stub.exists():
-    print(f"stub.c not found: {stub}", file=sys.stderr)
-    return 1
-
-  snippet = """int uv_utf16_to_wtf8(const uint16_t* utf16, ssize_t utf16_len, char** wtf8_ptr, size_t* wtf8_len_ptr) {
+local SNIPPET = [[int uv_utf16_to_wtf8(const uint16_t* utf16, ssize_t utf16_len, char** wtf8_ptr, size_t* wtf8_len_ptr) {
   UV__UNUSED(utf16);
   UV__UNUSED(utf16_len);
   UV__UNUSED(wtf8_ptr);
@@ -173,19 +145,54 @@ void uv_wtf8_to_utf16(const char* wtf8, uint16_t* utf16, size_t utf16_len) {
   UV__UNUSED(utf16);
   UV__UNUSED(utf16_len);
 }
-"""
+]]
 
-  text = stub.read_text()
-  text = re.sub(r"int uv_utf16_to_wtf8[\s\S]*\Z", snippet, text, flags=re.S)
-  if "uv_gettimeofday" not in text or "uv_thread_self" not in text:
-    if not text.endswith("\n"):
-      text += "\n"
-    text += EXTRA_BLOCK
-    if "uv_utf16_to_wtf8" not in text:
-      text += "\n" + snippet
-  stub.write_text(text)
+local function readfile(p)
+  local f = assert(io.open(p, "rb"))
+  local s = f:read("*a")
+  f:close()
+  return s
+end
+
+local function writefile(p, s)
+  local f = assert(io.open(p, "wb"))
+  f:write(s)
+  f:close()
+end
+
+local function main(argv)
+  local src = argv[1]
+  if not src or src == "" or src == "-h" or src == "--help" then
+    io.stderr:write("usage: libuv_wasi_tail.lua <libuv-source-dir>\n")
+    return 2
+  end
+  local stub = src .. "/src/wasi/stub.c"
+
+  local text = readfile(stub)
+  local start = text:find("int uv_utf16_to_wtf8", 1, true)
+  if start then
+    text = text:sub(1, start - 1) .. SNIPPET
+  end
+
+  if not text:match("\n$") then
+    text = text .. "\n"
+  end
+  local need_extra = (not text:find("uv_gettimeofday", 1, true)) or (not text:find("uv_thread_self", 1, true))
+  if need_extra then
+    text = text .. EXTRA_BLOCK
+    if not text:find("uv_utf16_to_wtf8", 1, true) then
+      text = text .. "\n" .. SNIPPET
+    end
+  end
+
+  writefile(stub, text)
   return 0
+end
 
-
-if __name__ == "__main__":
-  raise SystemExit(main(sys.argv))
+local ok, err = pcall(function()
+  os.exit(main(arg))
+end)
+if not ok then
+  io.stderr:write("[libuv_wasi_tail] error: " .. tostring(err) .. "\n")
+  os.exit(1)
+end

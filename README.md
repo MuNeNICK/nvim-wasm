@@ -7,7 +7,7 @@ Try Demo: https://nvim-wasm.pages.dev
 https://github.com/user-attachments/assets/524ccf71-1cc4-4b65-aea1-e3f6c893263e
 
 ## Prerequisites
-- Python 3 and `curl` (toolchain/deps downloads)
+- Lua interpreter (prefer Lua 5.1-compatible like `luajit`) and `curl`/`tar` (toolchain/deps downloads)
 - No system installs needed; everything is fetched into `.toolchains/`
 
 ## Build
