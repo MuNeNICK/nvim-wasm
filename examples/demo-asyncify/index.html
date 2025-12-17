@@ -32,7 +32,7 @@
       const gridStyles = window.getComputedStyle(gridEl);
       const fallbackFg = gridStyles.color || "#dfe5f1";
       const fallbackBg = gridStyles.backgroundColor || "#050912";
-      const WORKER_VERSION = "v24";
+      const WORKER_VERSION = "v25";
       const DEBUG = new URLSearchParams(location.search).has("debug");
       const cols = 96;
       const rows = 32;
@@ -158,10 +158,7 @@
         const keys = pendingKeys;
         pendingKeys = "";
         if (!keys) return;
-        // `nvim_input()` enqueues keys asynchronously; nudge the UI loop with a
-        // redraw to ensure an idle Neovim wakes and flushes UI updates.
         sendRpc("nvim_input", [keys]);
-        sendRpc("nvim_command", ["redraw!"]);
       }
 
       function handleWorkerMessage(event) {
