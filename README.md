@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/524ccf71-1cc4-4b65-aea1-e3f6c893263e
   - SAB demos: `cp build-wasm/bin/nvim examples/<demo>/nvim.wasm`
   - SAB-free demo: `make demo-asyncify` (copies `build-wasm/bin/nvim-asyncify.wasm` into `examples/demo-asyncify/nvim-asyncify.wasm`)
 
-## Asyncify build (SAB-free)
+## Asyncify build
 ### Why
 `SharedArrayBuffer` requires COOP/COEP headers. If you want a browser demo that works without those headers, use the Asyncify build and the SAB-free demo.
 
@@ -49,8 +49,3 @@ https://github.com/user-attachments/assets/524ccf71-1cc4-4b65-aea1-e3f6c893263e
 - Build the base wasm first: `make host-lua && make wasm-deps && make wasm`
 - Generate the Asyncify wasm:
   - `make wasm-asyncify`
-- Copy it into the SAB-free demo directory:
-  - `make demo-asyncify`
-
-### Run
-- `python3 examples/demo-asyncify/serve.py`
